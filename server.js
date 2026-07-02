@@ -11,11 +11,10 @@ import multer from 'multer';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import path from 'path';
+import fs from 'fs';
 
-// Import sendOTP function
 import { sendOTP } from './sendOTP.js';
 
-// Get current directory
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -23,13 +22,14 @@ dotenv.config();
 
 const MongoDBStore = connectMongoDBSession(session);
 const app = express();
-const PORT = process.env.PORT || 5000;
 
-// ==================== MIDDLEWARE ====================
-
-// CORS Configuration
+// ==================== CORS ====================
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+  origin: [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'https://os-ffrontend.vercel.app'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -39,13 +39,21 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // ==================== MONGODB CONNECTION ====================
-mongoose.connect('mongodb://127.0.0.1:27017/OSF')
-  .then(() => console.log('✅ MongoDB connected successfully'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+const mongoURI = process.env.MONGO_URI;
 
-// ==================== SESSION CONFIGURATION ====================
+if (!mongoURI) {
+  console.error('❌ MONGO_URI is missing in environment variables');
+}
+
+if (mongoose.connection.readyState === 0) {
+  mongoose.connect(mongoURI)
+    .then(() => console.log('✅ MongoDB connected successfully'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+}
+
+// ==================== SESSION ====================
 const store = new MongoDBStore({
-  uri: 'mongodb://127.0.0.1:27017/OSF',
+  uri: mongoURI,
   collection: 'sessions'
 });
 
@@ -66,10 +74,7 @@ app.use(session({
   }
 }));
 
-// ==================== SCHEMA DEFINITIONS ====================
-
-// User Schema - Password is optional
-// ==================== SCHEMA DEFINITIONS ====================
+// ==================== SCHEMAS ====================
 
 // User Schema
 const userSchema = new mongoose.Schema({
@@ -82,9 +87,9 @@ const userSchema = new mongoose.Schema({
   lastLogin: { type: Date, default: Date.now }
 }, { timestamps: true });
 
-const User = mongoose.model('User', userSchema);
+const User = mongoose.models.User || mongoose.model('User', userSchema);
 
-// FIX: Remove old unique index on username
+// Fix old username index
 User.collection.getIndexes()
   .then(indexes => {
     if (indexes.username_1) {
@@ -93,7 +98,7 @@ User.collection.getIndexes()
   })
   .then(() => console.log('✅ Username index fixed'))
   .catch(err => {
-    if (err.code !== 27) { // 27 = index not found
+    if (err.code !== 27) {
       console.log('Username index fix:', err.message);
     }
   });
@@ -105,15 +110,15 @@ const orderSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   length: { type: Number, required: true, min: 0 },
   width: { type: Number, required: true, min: 0 },
-  status: { 
-    type: String, 
+  status: {
+    type: String,
     default: 'pending',
     enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected']
   },
   feedback: { type: String, trim: true, default: '' }
 }, { timestamps: true });
 
-const Order = mongoose.model('Order', orderSchema);
+const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
 
 // OTP Schema
 const otpSchema = new mongoose.Schema({
@@ -123,7 +128,7 @@ const otpSchema = new mongoose.Schema({
   verified: { type: Boolean, default: false }
 }, { timestamps: true });
 
-const OTP = mongoose.model('OTP', otpSchema);
+const OTP = mongoose.models.OTP || mongoose.model('OTP', otpSchema);
 
 // Enquiry Schema
 const enquirySchema = new mongoose.Schema({
@@ -134,7 +139,7 @@ const enquirySchema = new mongoose.Schema({
   message: { type: String, required: true, trim: true }
 }, { timestamps: true });
 
-const Enquiry = mongoose.model('Enquiry', enquirySchema);
+const Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
 
 // Service Schema
 const serviceSchema = new mongoose.Schema({
@@ -143,11 +148,9 @@ const serviceSchema = new mongoose.Schema({
   pricePerSquareFoot: { type: Number, required: true, min: 0 }
 }, { timestamps: true });
 
-const Service = mongoose.model('Service', serviceSchema);
+const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
 
-// ==================== MIDDLEWARE FUNCTIONS ====================
-
-// JWT Authentication Middleware
+// ==================== AUTH MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -166,7 +169,6 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Admin Authorization Middleware
 const authorizeAdmin = (req, res, next) => {
   if (req.user && req.user.role === 'admin') {
     next();
@@ -175,11 +177,15 @@ const authorizeAdmin = (req, res, next) => {
   }
 };
 
-// ==================== MULTER CONFIGURATION ====================
+// ==================== MULTER ====================
+const uploadDir = path.join('/tmp', 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const uploadPath = path.join(__dirname, 'uploads');
-    cb(null, uploadPath);
+    cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -191,7 +197,7 @@ const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
-  
+
   if (mimetype && extname) {
     return cb(null, true);
   } else {
@@ -199,24 +205,24 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-const upload = multer({ 
-  storage: storage,
+const upload = multer({
+  storage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: fileFilter
+  fileFilter
 });
 
-// ==================== API ROUTES ====================
+// ==================== ROUTES ====================
 
-// ========== AUTHENTICATION ROUTES ==========
+// Health route
+app.get('/', (req, res) => {
+  res.json({ message: 'OSF Backend Running' });
+});
 
-// Signup Route - FIXED
-app.post('/addr', async (req, res) => {
+// ==================== SIGNUP ====================
+app.post('/api/signup', async (req, res) => {
   try {
     const { username, email, mobile, password, addr } = req.body;
 
-    console.log('📝 Signup attempt:', { username, mobile, email: email || 'not provided' });
-
-    // Validation
     if (!username || !username.trim()) {
       return res.status(400).json({ message: 'Username is required' });
     }
@@ -229,13 +235,11 @@ app.post('/addr', async (req, res) => {
       return res.status(400).json({ message: 'Mobile number must be exactly 10 digits' });
     }
 
-    // Check if mobile already exists
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
       return res.status(400).json({ message: 'User already exists with this mobile number' });
     }
 
-    // Check if email already exists (if provided)
     if (email && email.trim() !== '') {
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
       if (existingEmail) {
@@ -245,49 +249,39 @@ app.post('/addr', async (req, res) => {
 
     const userCount = await User.countDocuments();
     const role = userCount === 0 ? 'admin' : 'user';
-    
-    // Hash password only if provided and not empty
+
     let hashedPassword = '';
     if (password && password.trim() !== '') {
       hashedPassword = await bcrypt.hash(password, 10);
     }
 
-    // Create user object
     const newUser = new User({
       username: username.trim(),
       mobile: mobile.trim(),
       password: hashedPassword,
-      role: role,
+      role,
       addr: addr && addr.trim() ? addr.trim() : '',
       email: email && email.trim() ? email.trim().toLowerCase() : ''
     });
 
     await newUser.save();
 
-    console.log('✅ User registered successfully:', newUser.username, 'Role:', role);
-    res.status(201).json({ 
-      message: 'User registered successfully', 
+    res.status(201).json({
+      message: 'User registered successfully',
       userId: newUser._id,
-      role: role 
+      role
     });
-    
   } catch (error) {
-    console.error('❌ Signup error details:', error);
-    
-    // Handle MongoDB duplicate key error
+    console.error('Signup error:', error);
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(400).json({ message: `${field} already exists` });
     }
-    
-    res.status(500).json({ 
-      message: 'Internal server error', 
-      error: error.message 
-    });
+    res.status(500).json({ message: 'Internal server error', error: error.message });
   }
 });
 
-// Login Route
+// ==================== LOGIN ====================
 app.post('/api/login', async (req, res) => {
   const { mobile, password } = req.body;
 
@@ -301,7 +295,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid mobile number' });
     }
 
-    // Check password if user has one
     if (user.password && user.password !== '') {
       if (!password) {
         return res.status(401).json({ message: 'Password is required' });
@@ -333,11 +326,10 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Logout Route
+// ==================== LOGOUT ====================
 app.post('/api/logout', (req, res) => {
   req.session.destroy((err) => {
     if (err) {
-      console.error('Logout error:', err);
       return res.status(500).json({ message: 'Could not log out' });
     }
     res.clearCookie('connect.sid');
@@ -345,9 +337,7 @@ app.post('/api/logout', (req, res) => {
   });
 });
 
-// ========== PASSWORD RESET ROUTES ==========
-
-// Forgot Password - Send OTP
+// ==================== FORGOT PASSWORD ====================
 app.post('/api/forgot-password', async (req, res) => {
   const { mobile } = req.body;
 
@@ -363,7 +353,7 @@ app.post('/api/forgot-password', async (req, res) => {
     const otpExpiry = new Date(Date.now() + 4 * 60 * 1000);
 
     await OTP.deleteMany({ userId: user._id, verified: false });
-    
+
     const otpEntry = new OTP({
       userId: user._id,
       otp: otpCode,
@@ -372,7 +362,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await otpEntry.save();
 
     const otpSent = await sendOTP(mobile, otpCode);
-    
+
     if (otpSent) {
       res.status(200).json({ message: 'OTP sent successfully' });
     } else {
@@ -384,7 +374,7 @@ app.post('/api/forgot-password', async (req, res) => {
   }
 });
 
-// Verify OTP
+// ==================== VERIFY OTP ====================
 app.post('/api/verify-otp', async (req, res) => {
   const { mobile, otp } = req.body;
 
@@ -415,7 +405,7 @@ app.post('/api/verify-otp', async (req, res) => {
   }
 });
 
-// Reset Password
+// ==================== RESET PASSWORD ====================
 app.post('/api/reset-password', async (req, res) => {
   const { userId, newPassword } = req.body;
 
@@ -444,9 +434,7 @@ app.post('/api/reset-password', async (req, res) => {
   }
 });
 
-// ========== PROFILE ROUTES ==========
-
-// Get Profile
+// ==================== PROFILE ====================
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
     const userData = await User.findById(req.user.id).select('-password');
@@ -460,13 +448,12 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// Update Profile
 app.put('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { username, email, mobile, addr, password } = req.body;
-    
+
     const updateData = { username, email, mobile, addr };
-    
+
     if (password && password.trim() !== '') {
       updateData.password = await bcrypt.hash(password, 10);
     }
@@ -484,9 +471,7 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
-// ========== ORDER ROUTES ==========
-
-// Create Order
+// ==================== ORDERS ====================
 app.post('/api/create-order', authenticateToken, async (req, res) => {
   const { title, length, width, orderAmount } = req.body;
 
@@ -516,7 +501,6 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
   }
 });
 
-// Get Orders
 app.get('/api/orders', authenticateToken, async (req, res) => {
   try {
     let orders;
@@ -532,7 +516,6 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
   }
 });
 
-// Get My Orders
 app.get('/api/my-orders', authenticateToken, async (req, res) => {
   try {
     const orders = await Order.find({ userId: req.user.id })
@@ -545,7 +528,6 @@ app.get('/api/my-orders', authenticateToken, async (req, res) => {
   }
 });
 
-// Update Order Status (Admin only)
 app.post('/api/orders/update-status', authenticateToken, authorizeAdmin, async (req, res) => {
   const { statusUpdates } = req.body;
 
@@ -570,7 +552,6 @@ app.post('/api/orders/update-status', authenticateToken, authorizeAdmin, async (
   }
 });
 
-// Cancel Order
 app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
   const { orderId } = req.params;
 
@@ -598,7 +579,6 @@ app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
   }
 });
 
-// Review Order
 app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
   const { orderId } = req.params;
   const { action, feedback } = req.body;
@@ -636,9 +616,7 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
   }
 });
 
-// ========== SERVICE ROUTES ==========
-
-// Get all services
+// ==================== SERVICES ====================
 app.get('/api/services', async (req, res) => {
   try {
     const services = await Service.find().sort({ createdAt: -1 });
@@ -649,7 +627,6 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-// Get single service
 app.get('/api/services/:id', async (req, res) => {
   try {
     const service = await Service.findById(req.params.id);
@@ -663,7 +640,6 @@ app.get('/api/services/:id', async (req, res) => {
   }
 });
 
-// Create service (Admin only)
 app.post('/api/services', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
   try {
     const { title, pricePerSquareFoot } = req.body;
@@ -682,7 +658,6 @@ app.post('/api/services', authenticateToken, authorizeAdmin, upload.single('imag
   }
 });
 
-// Update service (Admin only)
 app.put('/api/services/:id', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
   try {
     const { title, pricePerSquareFoot } = req.body;
@@ -704,7 +679,6 @@ app.put('/api/services/:id', authenticateToken, authorizeAdmin, upload.single('i
   }
 });
 
-// Delete service (Admin only)
 app.delete('/api/services/:id', authenticateToken, authorizeAdmin, async (req, res) => {
   try {
     const deletedService = await Service.findByIdAndDelete(req.params.id);
@@ -718,8 +692,7 @@ app.delete('/api/services/:id', authenticateToken, authorizeAdmin, async (req, r
   }
 });
 
-// ========== ENQUIRY ROUTE ==========
-
+// ==================== ENQUIRIES ====================
 app.post('/api/enquiries', async (req, res) => {
   const { name, email, mobile, subject, message } = req.body;
 
@@ -737,32 +710,25 @@ app.post('/api/enquiries', async (req, res) => {
   }
 });
 
-// ==================== STATIC FILES ====================
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+// ==================== STATIC UPLOADS ====================
+app.use('/uploads', express.static(uploadDir));
 
-// ==================== ERROR HANDLING ====================
-
-// 404 Handler
-app.use('*', (req, res) => {
+// ==================== 404 ====================
+app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-// Global Error Handler
+// ==================== GLOBAL ERROR ====================
 app.use((err, req, res, next) => {
   console.error('Global error:', err);
-  res.status(500).json({ 
+  res.status(500).json({
     message: 'Something went wrong!',
     ...(process.env.NODE_ENV === 'development' && { error: err.message })
   });
 });
 
-// ==================== START SERVER ====================
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on http://localhost:${PORT}`);
-  console.log(`📁 Uploads directory: ${path.join(__dirname, 'uploads')}`);
-  console.log(`✅ CORS enabled for http://localhost:3000`);
-});
-
 mongoose.connection.on('error', (err) => {
   console.error('MongoDB connection error:', err);
 });
+
+export default app;
