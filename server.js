@@ -58,7 +58,7 @@ const mongoURI = process.env.MONGO_URI;
 
 if (!mongoURI) {
   console.error('❌ MONGO_URI is missing in environment variables');
-  console.error('❌ MONGO_URI is missing in environment variables');
+  process.exit(1);
 }
 
 if (mongoose.connection.readyState === 0) {
@@ -237,6 +237,10 @@ app.get('/', (req, res) => {
 // ==================== SIGNUP ====================
 app.get('/api/signup', (req, res) => {
   res.json({ message: 'Signup route working. Use POST to register.' });
+});
+
+// FIXED: Added async keyword here
+app.post('/api/signup', async (req, res) => {
   try {
     const { username, email, mobile, password, addr } = req.body;
 
@@ -746,7 +750,12 @@ app.use((err, req, res, next) => {
 
 mongoose.connection.on('error', (err) => {
   console.error('MongoDB connection error:', err);
-  console.error('MongoDB connection error:', err);
+});
+
+// ==================== START SERVER ====================
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
 
 export default app;
