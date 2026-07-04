@@ -28,19 +28,22 @@ const allowedOrigins = [
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   "https://os-ffrontend.vercel.app",
-  "https://os-ffrontend-6zokd6lb9-ankitas-projects-060f1bcd.vercel.app",
-  "https://os-ffrontend-6zokd6lb9-ankitas-projects-060f1bcd.vercel.app",
-  "https://os-ffrontend-git-main-ankitas-projects-060f1bcd.vercel.app",
-
+  "https://os-ffrontend-aljsp2drq-ankitas-projects-060f1bcd.vercel.app"
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error("Not allowed by CORS"));
+    if (!origin) return callback(null, true);
+
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes("os-ffrontend") ||
+      origin.endsWith(".vercel.app")
+    ) {
+      return callback(null, true);
     }
+
+    return callback(new Error("Not allowed by CORS"));
   },
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -232,7 +235,8 @@ app.get('/', (req, res) => {
 });
 
 // ==================== SIGNUP ====================
-app.post('/api/signup', async (req, res) => {
+app.get('/api/signup', (req, res) => {
+  res.json({ message: 'Signup route working. Use POST to register.' });
   try {
     const { username, email, mobile, password, addr } = req.body;
 
