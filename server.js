@@ -24,15 +24,27 @@ const MongoDBStore = connectMongoDBSession(session);
 const app = express();
 
 // ==================== CORS ====================
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://os-ffrontend.vercel.app",
+  "https://os-ffrontend-6zokd6lb9-ankitas-projects-060f1bcd.vercel.app",
+  "https://os-ffrontend-6zokd6lb9-ankitas-projects-060f1bcd.vercel.app",
+  "https://os-ffrontend-git-main-ankitas-projects-060f1bcd.vercel.app",
+
+];
+
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-    'https://os-ffrontend.vercel.app'
-  ],
+  origin: function (origin, callback) {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
 app.use(bodyParser.json());
@@ -42,6 +54,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 const mongoURI = process.env.MONGO_URI;
 
 if (!mongoURI) {
+  console.error('❌ MONGO_URI is missing in environment variables');
   console.error('❌ MONGO_URI is missing in environment variables');
 }
 
@@ -729,6 +742,8 @@ app.use((err, req, res, next) => {
 
 mongoose.connection.on('error', (err) => {
   console.error('MongoDB connection error:', err);
+  console.error('MongoDB connection error:', err);
 });
 
 export default app;
+//======================End of the code ===========================
