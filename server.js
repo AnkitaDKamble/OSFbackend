@@ -13,7 +13,18 @@ import { dirname } from 'path';
 import path from 'path';
 import fs from 'fs';
 
-import { sendOTP } from './sendOTP.js';
+// Import sendOTP if it exists, otherwise use a dummy function
+let sendOTP;
+try {
+  const otpModule = await import('./sendOTP.js');
+  sendOTP = otpModule.sendOTP;
+} catch (error) {
+  console.log('⚠️ sendOTP.js not found, using dummy function');
+  sendOTP = async (mobile, otp) => {
+    console.log(`📱 OTP for ${mobile}: ${otp}`);
+    return true;
+  };
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -66,7 +77,10 @@ const mongoURI = process.env.MONGO_URI;
 if (!mongoURI) {
   console.error('❌ MONGO_URI is missing in environment variables');
 } else {
-  mongoose.connect(mongoURI)
+  mongoose.connect(mongoURI, {
+    serverSelectionTimeoutMS: 5000,
+    socketTimeoutMS: 45000,
+  })
     .then(() => console.log('✅ MongoDB connected successfully'))
     .catch(err => console.error('❌ MongoDB connection error:', err));
 }
@@ -226,7 +240,12 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'OSF Backend Running on Vercel',
     status: 'OK',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    environment: {
+      nodeVersion: process.version,
+      mongoURI: process.env.MONGO_URI ? 'Set' : 'Not Set',
+      jwtSecret: process.env.JWT_SECRET ? 'Set' : 'Not Set'
+    }
   });
 });
 
@@ -330,7 +349,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user._id, role: user.role, username: user.username },
-      process.env.JWT_SECRET,
+      process.env.JWT_SECRET || 'fallback_secret_key_for_dev',
       { expiresIn: '24h' }
     );
 
@@ -736,6 +755,15 @@ app.post('/api/enquiries', async (req, res) => {
 
 // ==================== STATIC UPLOADS ====================
 app.use('/uploads', express.static(uploadDir));
+
+// ==================== TEST ROUTE ====================
+app.get('/api/test', (req, res) => {
+  res.json({
+    message: 'API is working!',
+    timestamp: new Date().toISOString(),
+    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+  });
+});
 
 // ==================== 404 ====================
 app.use((req, res) => {
