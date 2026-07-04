@@ -13,19 +13,6 @@ import { dirname } from 'path';
 import path from 'path';
 import fs from 'fs';
 
-// Import sendOTP if it exists
-let sendOTP;
-try {
-  const otpModule = await import('./sendOTP.js');
-  sendOTP = otpModule.sendOTP;
-} catch (error) {
-  console.log('⚠️ sendOTP.js not found, using dummy function');
-  sendOTP = async (mobile, otp) => {
-    console.log(`📱 OTP for ${mobile}: ${otp}`);
-    return true;
-  };
-}
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
@@ -65,35 +52,39 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
 
-// Handle preflight requests
 app.options('*', cors());
 
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ==================== MONGODB CONNECTION ====================
 const mongoURI = process.env.MONGO_URI;
 let isMongoConnected = false;
 
+console.log('🔍 Checking MongoDB connection...');
+
 if (!mongoURI) {
   console.error('❌ MONGO_URI is missing in environment variables');
 } else {
   mongoose.connect(mongoURI, {
-    serverSelectionTimeoutMS: 5000,
+    serverSelectionTimeoutMS: 10000,
     socketTimeoutMS: 45000,
   })
     .then(() => {
       isMongoConnected = true;
       console.log('✅ MongoDB connected successfully');
+      console.log('📊 Database:', mongoose.connection.name);
+      console.log('🏷️ Models:', Object.keys(mongoose.models));
     })
     .catch(err => {
-      console.error('❌ MongoDB connection error:', err);
+      console.error('❌ MongoDB connection error:', err.message);
+      console.error('📋 Please check your MONGO_URI and network connectivity');
       isMongoConnected = false;
     });
 }
 
 // ==================== SESSION ====================
-if (mongoURI) {
+if (mongoURI && isMongoConnected) {
   const store = new MongoDBStore({
     uri: mongoURI,
     collection: 'sessions'
@@ -119,126 +110,21 @@ if (mongoURI) {
 
 // ==================== SCHEMAS ====================
 
-// User Schema
+// User Schema - Simplified for debugging
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
   email: { type: String, required: false, trim: true, lowercase: true, default: '' },
   mobile: { type: String, required: true, unique: true, match: /^\d{10}$/ },
-  password: { type: String, required: false, default: '' },
+  password: { type: String, required: true, default: '' },
   role: { type: String, default: 'user', enum: ['user', 'admin'] },
   addr: { type: String, required: false, trim: true, default: '' },
   lastLogin: { type: Date, default: Date.now }
-}, { timestamps: true });
+}, { 
+  timestamps: true,
+  collection: 'users' // Explicit collection name
+});
 
 const User = mongoose.models.User || mongoose.model('User', userSchema);
-
-// Order Schema
-const orderSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  orderAmount: { type: Number, required: true, min: 0 },
-  title: { type: String, required: true, trim: true },
-  length: { type: Number, required: true, min: 0 },
-  width: { type: Number, required: true, min: 0 },
-  status: {
-    type: String,
-    default: 'pending',
-    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected']
-  },
-  feedback: { type: String, trim: true, default: '' }
-}, { timestamps: true });
-
-const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
-
-// OTP Schema
-const otpSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  otp: { type: String, required: true },
-  expiresAt: { type: Date, required: true },
-  verified: { type: Boolean, default: false }
-}, { timestamps: true });
-
-const OTP = mongoose.models.OTP || mongoose.model('OTP', otpSchema);
-
-// Enquiry Schema
-const enquirySchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  email: { type: String, required: false, trim: true, default: '' },
-  mobile: { type: String, required: true, match: /^\d{10}$/ },
-  subject: { type: String, required: true, trim: true },
-  message: { type: String, required: true, trim: true }
-}, { timestamps: true });
-
-const Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
-
-// Service Schema
-const serviceSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true },
-  imagePath: { type: String, default: '' },
-  pricePerSquareFoot: { type: Number, required: true, min: 0 }
-}, { timestamps: true });
-
-const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
-
-// ==================== AUTH MIDDLEWARE ====================
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers.authorization;
-  const token = authHeader && authHeader.split(' ')[1];
-
-  if (!token) {
-    return res.status(401).json({ message: 'Unauthorized: Missing token' });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret', (err, user) => {
-    if (err) {
-      console.error("JWT Verification Error:", err.message);
-      return res.status(403).json({ message: 'Forbidden: Invalid or expired token' });
-    }
-    req.user = user;
-    next();
-  });
-};
-
-const authorizeAdmin = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
-    next();
-  } else {
-    res.status(403).json({ message: 'Forbidden: Admin access required' });
-  }
-};
-
-// ==================== MULTER ====================
-const uploadDir = path.join('/tmp', 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = /jpeg|jpg|png|gif|webp/;
-  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-  const mimetype = allowedTypes.test(file.mimetype);
-
-  if (mimetype && extname) {
-    return cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed'));
-  }
-};
-
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter
-});
 
 // ==================== ROUTES ====================
 
@@ -251,6 +137,7 @@ app.get('/', (req, res) => {
     environment: {
       nodeVersion: process.version,
       mongoURI: process.env.MONGO_URI ? 'Set' : 'Not Set',
+      mongoConnected: isMongoConnected,
       jwtSecret: process.env.JWT_SECRET ? 'Set' : 'Not Set'
     }
   });
@@ -262,42 +149,82 @@ app.get('/api/signup', (req, res) => {
 });
 
 app.post('/api/signup', async (req, res) => {
+  console.log('📝 Signup request received');
+  console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+  
   try {
     const { username, email, mobile, password, addr } = req.body;
 
-    console.log('Signup attempt for:', { username, mobile, email });
-
+    // Step 1: Validate input
+    console.log('✅ Step 1: Validating input...');
+    
     if (!username || !username.trim()) {
+      console.log('❌ Username missing');
       return res.status(400).json({ message: 'Username is required' });
     }
 
     if (!mobile || !mobile.trim()) {
+      console.log('❌ Mobile missing');
       return res.status(400).json({ message: 'Mobile number is required' });
     }
 
     if (!/^\d{10}$/.test(mobile)) {
+      console.log('❌ Invalid mobile format:', mobile);
       return res.status(400).json({ message: 'Mobile number must be exactly 10 digits' });
     }
 
-    const existingMobile = await User.findOne({ mobile });
-    if (existingMobile) {
-      return res.status(400).json({ message: 'User already exists with this mobile number' });
+    if (!password || password.trim().length < 1) {
+      console.log('❌ Password missing or too short');
+      return res.status(400).json({ message: 'Password is required' });
     }
 
-    if (email && email.trim() !== '') {
-      const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
-      if (existingEmail) {
-        return res.status(400).json({ message: 'User already exists with this email address' });
+    console.log('✅ Input validation passed');
+
+    // Step 2: Check if user exists
+    console.log('🔍 Step 2: Checking if user exists...');
+    try {
+      const existingMobile = await User.findOne({ mobile });
+      if (existingMobile) {
+        console.log('❌ User already exists with mobile:', mobile);
+        return res.status(400).json({ message: 'User already exists with this mobile number' });
       }
+
+      if (email && email.trim() !== '') {
+        const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
+        if (existingEmail) {
+          console.log('❌ User already exists with email:', email);
+          return res.status(400).json({ message: 'User already exists with this email address' });
+        }
+      }
+      console.log('✅ User does not exist, proceeding...');
+    } catch (dbError) {
+      console.error('❌ Database query error:', dbError.message);
+      return res.status(500).json({ 
+        message: 'Database error while checking user existence',
+        error: dbError.message 
+      });
     }
 
+    // Step 3: Hash password
+    console.log('🔐 Step 3: Hashing password...');
+    let hashedPassword;
+    try {
+      hashedPassword = await bcrypt.hash(password, 10);
+      console.log('✅ Password hashed successfully');
+    } catch (hashError) {
+      console.error('❌ Password hashing error:', hashError.message);
+      return res.status(500).json({ 
+        message: 'Error hashing password',
+        error: hashError.message 
+      });
+    }
+
+    // Step 4: Create user
+    console.log('📝 Step 4: Creating user...');
     const userCount = await User.countDocuments();
     const role = userCount === 0 ? 'admin' : 'user';
-
-    let hashedPassword = '';
-    if (password && password.trim() !== '') {
-      hashedPassword = await bcrypt.hash(password, 10);
-    }
+    
+    console.log(`👤 User will be ${role} (${userCount} existing users)`);
 
     const newUser = new User({
       username: username.trim(),
@@ -308,386 +235,77 @@ app.post('/api/signup', async (req, res) => {
       email: email && email.trim() ? email.trim().toLowerCase() : ''
     });
 
-    await newUser.save();
+    console.log('📄 User object created:', JSON.stringify(newUser, null, 2));
 
-    console.log('User created successfully:', newUser._id);
+    // Step 5: Save user
+    console.log('💾 Step 5: Saving user to database...');
+    try {
+      await newUser.save();
+      console.log('✅ User saved successfully!');
+      console.log('🆔 User ID:', newUser._id);
+    } catch (saveError) {
+      console.error('❌ Save error:', saveError);
+      
+      if (saveError.code === 11000) {
+        const field = Object.keys(saveError.keyPattern)[0];
+        console.log(`❌ Duplicate key error on field: ${field}`);
+        return res.status(400).json({ message: `${field} already exists` });
+      }
+      
+      console.error('❌ Database save error:', saveError.message);
+      return res.status(500).json({ 
+        message: 'Error saving user to database',
+        error: saveError.message 
+      });
+    }
 
+    // Success!
+    console.log('🎉 Signup successful!');
     res.status(201).json({
       message: 'User registered successfully',
       userId: newUser._id,
-      role
-    });
-  } catch (error) {
-    console.error('Signup error:', error);
-    if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      return res.status(400).json({ message: `${field} already exists` });
-    }
-    res.status(500).json({ message: 'Internal server error', error: error.message });
-  }
-});
-
-// ==================== LOGIN ====================
-app.post('/api/login', async (req, res) => {
-  const { mobile, password } = req.body;
-
-  if (!mobile) {
-    return res.status(400).json({ message: 'Mobile number is required' });
-  }
-
-  try {
-    const user = await User.findOne({ mobile });
-    if (!user) {
-      return res.status(401).json({ message: 'Invalid mobile number' });
-    }
-
-    if (user.password && user.password !== '') {
-      if (!password) {
-        return res.status(401).json({ message: 'Password is required' });
-      }
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(401).json({ message: 'Invalid password' });
-      }
-    }
-
-    user.lastLogin = new Date();
-    await user.save();
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role, username: user.username },
-      process.env.JWT_SECRET || 'fallback_secret',
-      { expiresIn: '24h' }
-    );
-
-    res.status(200).json({
-      message: 'Login successful',
-      token,
-      role: user.role,
-      username: user.username
-    });
-  } catch (error) {
-    console.error('Login error:', error.message);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ==================== LOGOUT ====================
-app.post('/api/logout', (req, res) => {
-  if (req.session) {
-    req.session.destroy((err) => {
-      if (err) {
-        return res.status(500).json({ message: 'Could not log out' });
-      }
-      res.clearCookie('connect.sid');
-      res.status(200).json({ message: 'Logout successful' });
-    });
-  } else {
-    res.status(200).json({ message: 'Logout successful' });
-  }
-});
-
-// ==================== PROFILE ====================
-app.get('/api/profile', authenticateToken, async (req, res) => {
-  try {
-    const userData = await User.findById(req.user.id).select('-password');
-    if (!userData) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-    res.status(200).json(userData);
-  } catch (error) {
-    console.error('Profile fetch error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-app.put('/api/profile', authenticateToken, async (req, res) => {
-  try {
-    const { username, email, mobile, addr, password } = req.body;
-
-    const updateData = { username, email, mobile, addr };
-
-    if (password && password.trim() !== '') {
-      updateData.password = await bcrypt.hash(password, 10);
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      updateData,
-      { new: true, runValidators: true }
-    ).select('-password');
-
-    res.status(200).json(updatedUser);
-  } catch (error) {
-    console.error('Profile update error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ==================== ORDERS ====================
-app.post('/api/create-order', authenticateToken, async (req, res) => {
-  const { title, length, width, orderAmount } = req.body;
-
-  if (!title || !length || !width || !orderAmount) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
-  if (orderAmount <= 0) {
-    return res.status(400).json({ message: 'Order amount must be greater than 0' });
-  }
-
-  try {
-    const newOrder = new Order({
-      userId: req.user.id,
-      orderAmount,
-      title,
-      length,
-      width,
-      status: 'pending'
+      role: newUser.role
     });
 
-    await newOrder.save();
-    res.status(201).json({ message: 'Order created successfully', order: newOrder });
   } catch (error) {
-    console.error('Order creation error:', error);
-    res.status(500).json({ message: 'Error placing order. Please try again.' });
+    console.error('💥 UNEXPECTED ERROR:', error);
+    console.error('📋 Error stack:', error.stack);
+    
+    res.status(500).json({
+      message: 'Internal server error',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
-app.get('/api/orders', authenticateToken, async (req, res) => {
+// ==================== SIMPLE TEST ROUTE ====================
+app.post('/api/test-signup', async (req, res) => {
   try {
-    let orders;
-    if (req.user.role === 'admin') {
-      orders = await Order.find().populate('userId', 'username email mobile');
-    } else {
-      orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
-    }
-    res.status(200).json({ orders });
+    const { username, mobile } = req.body;
+    res.json({ 
+      message: 'Test route works!',
+      received: { username, mobile },
+      dbConnected: isMongoConnected
+    });
   } catch (error) {
-    console.error('Fetch orders error:', error);
-    res.status(500).json({ message: 'Error fetching orders' });
+    res.status(500).json({ error: error.message });
   }
 });
-
-app.get('/api/my-orders', authenticateToken, async (req, res) => {
-  try {
-    const orders = await Order.find({ userId: req.user.id })
-      .populate('userId', 'username')
-      .sort({ createdAt: -1 });
-    res.status(200).json({ orders });
-  } catch (error) {
-    console.error('Fetch my orders error:', error);
-    res.status(500).json({ message: 'Error fetching your orders' });
-  }
-});
-
-app.post('/api/orders/update-status', authenticateToken, authorizeAdmin, async (req, res) => {
-  const { statusUpdates } = req.body;
-
-  if (!Array.isArray(statusUpdates) || statusUpdates.length === 0) {
-    return res.status(400).json({ message: 'Invalid status updates data' });
-  }
-
-  try {
-    const updatedOrders = [];
-    for (const { orderId, status } of statusUpdates) {
-      const order = await Order.findById(orderId);
-      if (order) {
-        order.status = status;
-        await order.save();
-        updatedOrders.push(order);
-      }
-    }
-    res.status(200).json({ message: 'Order statuses updated', updatedOrders });
-  } catch (error) {
-    console.error('Update status error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
-  const { orderId } = req.params;
-
-  try {
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    if (order.status !== 'pending') {
-      return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
-    }
-
-    if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to cancel this order' });
-    }
-
-    order.status = 'cancelled';
-    await order.save();
-
-    res.status(200).json({ message: 'Order cancelled successfully', order });
-  } catch (error) {
-    console.error('Cancel order error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
-  const { orderId } = req.params;
-  const { action, feedback } = req.body;
-
-  if (!action || (action !== 'accept' && action !== 'reject')) {
-    return res.status(400).json({ message: 'Invalid action. Must be "accept" or "reject"' });
-  }
-
-  if (action === 'reject' && (!feedback || feedback.trim().length === 0)) {
-    return res.status(400).json({ message: 'Feedback is required when rejecting an order' });
-  }
-
-  try {
-    const order = await Order.findById(orderId);
-    if (!order) {
-      return res.status(404).json({ message: 'Order not found' });
-    }
-
-    if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
-      return res.status(403).json({ message: 'Not authorized to review this order' });
-    }
-
-    if (order.status !== 'delivered') {
-      return res.status(400).json({ message: `Cannot review order with status '${order.status}'` });
-    }
-
-    order.status = action === 'accept' ? 'accepted' : 'rejected';
-    if (feedback) order.feedback = feedback;
-    await order.save();
-
-    res.status(200).json({ message: `Order ${action}ed successfully`, order });
-  } catch (error) {
-    console.error('Review order error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ==================== SERVICES ====================
-app.get('/api/services', async (req, res) => {
-  try {
-    const services = await Service.find().sort({ createdAt: -1 });
-    res.status(200).json({ services });
-  } catch (error) {
-    console.error('Fetch services error:', error);
-    res.status(500).json({ message: 'Failed to fetch services' });
-  }
-});
-
-app.get('/api/services/:id', async (req, res) => {
-  try {
-    const service = await Service.findById(req.params.id);
-    if (!service) {
-      return res.status(404).json({ message: 'Service not found' });
-    }
-    res.status(200).json({ service });
-  } catch (error) {
-    console.error('Fetch service error:', error);
-    res.status(500).json({ message: 'Failed to fetch service' });
-  }
-});
-
-app.post('/api/services', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
-  try {
-    const { title, pricePerSquareFoot } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : '';
-
-    if (!title || !pricePerSquareFoot) {
-      return res.status(400).json({ message: 'Title and price are required' });
-    }
-
-    const newService = new Service({ title, imagePath, pricePerSquareFoot });
-    await newService.save();
-    res.status(201).json({ message: 'Service created', service: newService });
-  } catch (error) {
-    console.error('Create service error:', error);
-    res.status(500).json({ message: 'Failed to create service' });
-  }
-});
-
-app.put('/api/services/:id', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
-  try {
-    const { title, pricePerSquareFoot } = req.body;
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : req.body.imagePath;
-
-    const updatedService = await Service.findByIdAndUpdate(
-      req.params.id,
-      { title, pricePerSquareFoot, imagePath },
-      { new: true, runValidators: true }
-    );
-
-    if (!updatedService) {
-      return res.status(404).json({ message: 'Service not found' });
-    }
-    res.status(200).json({ message: 'Service updated', service: updatedService });
-  } catch (error) {
-    console.error('Update service error:', error);
-    res.status(500).json({ message: 'Failed to update service' });
-  }
-});
-
-app.delete('/api/services/:id', authenticateToken, authorizeAdmin, async (req, res) => {
-  try {
-    const deletedService = await Service.findByIdAndDelete(req.params.id);
-    if (!deletedService) {
-      return res.status(404).json({ message: 'Service not found' });
-    }
-    res.status(200).json({ message: 'Service deleted', service: deletedService });
-  } catch (error) {
-    console.error('Delete service error:', error);
-    res.status(500).json({ message: 'Failed to delete service' });
-  }
-});
-
-// ==================== ENQUIRIES ====================
-app.post('/api/enquiries', async (req, res) => {
-  const { name, email, mobile, subject, message } = req.body;
-
-  if (!name || !mobile || !subject || !message) {
-    return res.status(400).json({ message: 'Name, mobile, subject, and message are required' });
-  }
-
-  try {
-    const newEnquiry = new Enquiry({ name, email, mobile, subject, message });
-    await newEnquiry.save();
-    res.status(201).json({ message: 'Enquiry submitted successfully' });
-  } catch (error) {
-    console.error('Enquiry error:', error);
-    res.status(500).json({ message: 'Failed to submit enquiry' });
-  }
-});
-
-// ==================== TEST ROUTE ====================
-app.get('/api/test', (req, res) => {
-  res.json({
-    message: 'API is working!',
-    timestamp: new Date().toISOString(),
-    mongodb: isMongoConnected ? 'connected' : 'disconnected'
-  });
-});
-
-// ==================== STATIC UPLOADS ====================
-app.use('/uploads', express.static(uploadDir));
 
 // ==================== 404 ====================
 app.use((req, res) => {
   res.status(404).json({ message: 'Route not found' });
 });
 
-// ==================== GLOBAL ERROR ====================
+// ==================== ERROR HANDLER ====================
 app.use((err, req, res, next) => {
-  console.error('Global error:', err);
+  console.error('💥 Global error handler:', err);
   res.status(500).json({
     message: 'Something went wrong!',
-    ...(process.env.NODE_ENV === 'development' && { error: err.message })
+    error: process.env.NODE_ENV === 'development' ? err.message : undefined
   });
 });
 
-// ==================== EXPORT FOR VERCEL ====================
+// ==================== EXPORT ====================
 export default app;
