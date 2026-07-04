@@ -1,332 +1,755 @@
-import React, { useState } from "react";
-import { Modal, Button } from "react-bootstrap";
-import { Link, useNavigate } from "react-router-dom";
-import axios from "axios";
-import "./Signup.css";
+import express from 'express';
+import bodyParser from 'body-parser';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import bcrypt from 'bcrypt';
+import mongoose from 'mongoose';
+import session from 'express-session';
+import connectMongoDBSession from 'connect-mongodb-session';
+import jwt from 'jsonwebtoken';
+import multer from 'multer';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+import path from 'path';
+import fs from 'fs';
 
-// API URL - This will use the environment variable or fallback to localhost
-const API_URL = process.env.REACT_APP_API_URL || "http://localhost:5000";
+import { sendOTP } from './sendOTP.js';
 
-const SignUp = () => {
-  const navigate = useNavigate();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-  const [name, setName] = useState("");
-  const [email, setEmail] = useState("");
-  const [mobile, setMobile] = useState("");
-  const [addr, setAddr] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
+dotenv.config();
 
-  const [errors, setErrors] = useState({});
-  const [showSuccess, setShowSuccess] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+const MongoDBStore = connectMongoDBSession(session);
+const app = express();
 
-  // ---------- Validation ----------
-  const validate = () => {
-    const errs = {};
+// ==================== CORS ====================
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://127.0.0.1:3000",
+  "https://os-ffrontend.vercel.app",
+  "https://os-ffrontend-git-main-ankitas-projects-060f1bcd.vercel.app",
+  "https://os-ffrontend-cqs0tep7w-ankitas-projects-060f1bcd.vercel.app",
+  "https://os-ffrontend-aljsp2drq-ankitas-projects-060f1bcd.vercel.app"
+];
 
-    if (!name.trim()) errs.name = "Name is required";
+app.use(cors({
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
 
-    if (email && !/\S+@\S+\.\S+/.test(email)) {
-      errs.email = "Email is invalid";
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.includes("os-ffrontend") ||
+      origin.endsWith(".vercel.app") ||
+      origin.includes("localhost")
+    ) {
+      return callback(null, true);
+    }
+
+    console.log('Blocked origin:', origin);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
+
+// Handle preflight requests
+app.options('*', cors());
+
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// ==================== MONGODB CONNECTION ====================
+const mongoURI = process.env.MONGO_URI;
+
+if (!mongoURI) {
+  console.error('❌ MONGO_URI is missing in environment variables');
+} else {
+  mongoose.connect(mongoURI)
+    .then(() => console.log('✅ MongoDB connected successfully'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+}
+
+// ==================== SESSION ====================
+if (mongoURI) {
+  const store = new MongoDBStore({
+    uri: mongoURI,
+    collection: 'sessions'
+  });
+
+  store.on('error', (error) => {
+    console.log('Session store error:', error);
+  });
+
+  app.use(session({
+    secret: process.env.SESSION_SECRET || 'AnkitaDilipKamble',
+    resave: false,
+    saveUninitialized: false,
+    store: store,
+    cookie: {
+      maxAge: 1000 * 60 * 60 * 24,
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production'
+    }
+  }));
+}
+
+// ==================== SCHEMAS ====================
+
+// User Schema
+const userSchema = new mongoose.Schema({
+  username: { type: String, required: true, trim: true },
+  email: { type: String, required: false, trim: true, lowercase: true, default: '' },
+  mobile: { type: String, required: true, unique: true, match: /^\d{10}$/ },
+  password: { type: String, required: false, default: '' },
+  role: { type: String, default: 'user', enum: ['user', 'admin'] },
+  addr: { type: String, required: false, trim: true, default: '' },
+  lastLogin: { type: Date, default: Date.now }
+}, { timestamps: true });
+
+const User = mongoose.models.User || mongoose.model('User', userSchema);
+
+// Order Schema
+const orderSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  orderAmount: { type: Number, required: true, min: 0 },
+  title: { type: String, required: true, trim: true },
+  length: { type: Number, required: true, min: 0 },
+  width: { type: Number, required: true, min: 0 },
+  status: {
+    type: String,
+    default: 'pending',
+    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected']
+  },
+  feedback: { type: String, trim: true, default: '' }
+}, { timestamps: true });
+
+const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
+
+// OTP Schema
+const otpSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  otp: { type: String, required: true },
+  expiresAt: { type: Date, required: true },
+  verified: { type: Boolean, default: false }
+}, { timestamps: true });
+
+const OTP = mongoose.models.OTP || mongoose.model('OTP', otpSchema);
+
+// Enquiry Schema
+const enquirySchema = new mongoose.Schema({
+  name: { type: String, required: true, trim: true },
+  email: { type: String, required: false, trim: true, default: '' },
+  mobile: { type: String, required: true, match: /^\d{10}$/ },
+  subject: { type: String, required: true, trim: true },
+  message: { type: String, required: true, trim: true }
+}, { timestamps: true });
+
+const Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
+
+// Service Schema
+const serviceSchema = new mongoose.Schema({
+  title: { type: String, required: true, trim: true },
+  imagePath: { type: String, default: '' },
+  pricePerSquareFoot: { type: Number, required: true, min: 0 }
+}, { timestamps: true });
+
+const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
+
+// ==================== AUTH MIDDLEWARE ====================
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ message: 'Unauthorized: Missing token' });
+  }
+
+  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    if (err) {
+      console.error("JWT Verification Error:", err.message);
+      return res.status(403).json({ message: 'Forbidden: Invalid or expired token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+const authorizeAdmin = (req, res, next) => {
+  if (req.user && req.user.role === 'admin') {
+    next();
+  } else {
+    res.status(403).json({ message: 'Forbidden: Admin access required' });
+  }
+};
+
+// ==================== MULTER ====================
+const uploadDir = path.join('/tmp', 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|gif|webp/;
+  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+  const mimetype = allowedTypes.test(file.mimetype);
+
+  if (mimetype && extname) {
+    return cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed'));
+  }
+};
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter
+});
+
+// ==================== ROUTES ====================
+
+// Health route
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'OSF Backend Running on Vercel',
+    status: 'OK',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ==================== SIGNUP ====================
+app.get('/api/signup', (req, res) => {
+  res.json({ message: 'Signup route working. Use POST to register.' });
+});
+
+app.post('/api/signup', async (req, res) => {
+  try {
+    const { username, email, mobile, password, addr } = req.body;
+
+    console.log('Signup attempt for:', { username, mobile, email });
+
+    if (!username || !username.trim()) {
+      return res.status(400).json({ message: 'Username is required' });
+    }
+
+    if (!mobile || !mobile.trim()) {
+      return res.status(400).json({ message: 'Mobile number is required' });
     }
 
     if (!/^\d{10}$/.test(mobile)) {
-      errs.mobile = "Mobile number must be 10 digits";
+      return res.status(400).json({ message: 'Mobile number must be exactly 10 digits' });
     }
 
-    if (!addr.trim()) errs.addr = "Address is required";
-
-    if (!password) {
-      errs.password = "Password is required";
-    } else if (password.length < 1) {
-      errs.password = "Password must be at least 1 character";
-    } else if (password.length > 20) {
-      errs.password = "Password must not exceed 20 characters";
+    const existingMobile = await User.findOne({ mobile });
+    if (existingMobile) {
+      return res.status(400).json({ message: 'User already exists with this mobile number' });
     }
 
-    if (!confirmPassword) {
-      errs.confirmPassword = "Confirm password is required";
-    } else if (password !== confirmPassword) {
-      errs.confirmPassword = "Passwords do not match";
-    }
-
-    setErrors(errs);
-    return Object.keys(errs).length === 0;
-  };
-
-  // ---------- Submit ----------
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!validate()) return;
-
-    setIsLoading(true);
-    setErrors({});
-
-    const payload = {
-      username: name.trim(),
-      mobile: mobile.trim(),
-      addr: addr.trim(),
-      password: password,
-    };
-
-    if (email && email.trim()) {
-      payload.email = email.trim();
-    }
-
-    console.log("API_URL:", API_URL);
-    console.log("Sending payload:", payload);
-
-    try {
-      const response = await axios.post(`${API_URL}/api/signup`, payload, {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        timeout: 30000,
-      });
-
-      console.log("Signup success:", response.data);
-
-      setShowSuccess(true);
-      setName("");
-      setEmail("");
-      setMobile("");
-      setAddr("");
-      setPassword("");
-      setConfirmPassword("");
-    } catch (error) {
-      console.error("Signup error full:", error);
-      console.error("Error response:", error.response);
-      console.error("Error request:", error.request);
-      console.error("Error message:", error.message);
-
-      if (error.response) {
-        setErrors({
-          general:
-            error.response.data?.message ||
-            `Signup failed: ${error.response.status}`,
-        });
-      } else if (error.request) {
-        setErrors({
-          general: `Cannot connect to server. Please check your internet connection or try again later. (${error.message})`,
-        });
-      } else {
-        setErrors({
-          general: error.message || "An error occurred. Please try again.",
-        });
+    if (email && email.trim() !== '') {
+      const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
+      if (existingEmail) {
+        return res.status(400).json({ message: 'User already exists with this email address' });
       }
-    } finally {
-      setIsLoading(false);
     }
-  };
 
-  const handleClose = () => {
-    setShowSuccess(false);
-    navigate("/login");
-  };
+    const userCount = await User.countDocuments();
+    const role = userCount === 0 ? 'admin' : 'user';
 
-  // ---------- Input handlers ----------
-  const handleMobileChange = (e) => {
-    const value = e.target.value.replace(/[^0-9]/g, "");
-    if (value.length <= 10) {
-      setMobile(value);
+    let hashedPassword = '';
+    if (password && password.trim() !== '') {
+      hashedPassword = await bcrypt.hash(password, 10);
     }
-  };
 
-  const handleNameChange = (e) => {
-    const value = e.target.value.replace(/[^a-zA-Z\s]/g, "");
-    setName(value);
-  };
+    const newUser = new User({
+      username: username.trim(),
+      mobile: mobile.trim(),
+      password: hashedPassword,
+      role,
+      addr: addr && addr.trim() ? addr.trim() : '',
+      email: email && email.trim() ? email.trim().toLowerCase() : ''
+    });
 
-  return (
-    <div className="signup-container">
-      <div className="signup-card">
-        <div className="signup-header">
-          <i className="bi bi-person-plus-fill signup-icon"></i>
-          <h2 className="signup-title">Create Account</h2>
-          <p className="signup-subtitle">Join us to get started</p>
-        </div>
+    await newUser.save();
 
-        <form onSubmit={handleSubmit}>
-          {/* Name Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-person-fill me-2"></i>Full Name
-            </label>
-            <input
-              type="text"
-              className={`form-control signup-input ${
-                errors.name ? "is-invalid" : ""
-              }`}
-              value={name}
-              onChange={handleNameChange}
-              placeholder="Enter your full name"
-              maxLength={40}
-              required
-            />
-            {errors.name && <div className="error-message">{errors.name}</div>}
-          </div>
+    console.log('User created successfully:', newUser._id);
 
-          {/* Email Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-envelope-fill me-2"></i>Email Address
-              <span className="optional-badge">Optional</span>
-            </label>
-            <input
-              type="email"
-              className={`form-control signup-input ${
-                errors.email ? "is-invalid" : ""
-              }`}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email"
-              maxLength={30}
-            />
-            {errors.email && <div className="error-message">{errors.email}</div>}
-          </div>
+    res.status(201).json({
+      message: 'User registered successfully',
+      userId: newUser._id,
+      role
+    });
+  } catch (error) {
+    console.error('Signup error:', error);
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(400).json({ message: `${field} already exists` });
+    }
+    res.status(500).json({ message: 'Internal server error', error: error.message });
+  }
+});
 
-          {/* Mobile Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-phone-fill me-2"></i>Mobile Number
-            </label>
-            <input
-              type="tel"
-              className={`form-control signup-input ${
-                errors.mobile ? "is-invalid" : ""
-              }`}
-              value={mobile}
-              onChange={handleMobileChange}
-              placeholder="Enter 10 digit mobile number"
-              maxLength={10}
-              required
-            />
-            {errors.mobile && (
-              <div className="error-message">{errors.mobile}</div>
-            )}
-          </div>
+// ==================== LOGIN ====================
+app.post('/api/login', async (req, res) => {
+  const { mobile, password } = req.body;
 
-          {/* Address Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-geo-alt-fill me-2"></i>Address
-            </label>
-            <textarea
-              className={`form-control signup-textarea ${
-                errors.addr ? "is-invalid" : ""
-              }`}
-              value={addr}
-              onChange={(e) => setAddr(e.target.value)}
-              placeholder="Enter your full address"
-              rows="2"
-              maxLength={100}
-              required
-            />
-            {errors.addr && <div className="error-message">{errors.addr}</div>}
-          </div>
+  if (!mobile) {
+    return res.status(400).json({ message: 'Mobile number is required' });
+  }
 
-          {/* Password Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-lock-fill me-2"></i>Password
-            </label>
-            <input
-              type="password"
-              className={`form-control signup-input ${
-                errors.password ? "is-invalid" : ""
-              }`}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="Enter password"
-              maxLength={20}
-              required
-            />
-            {errors.password && (
-              <div className="error-message">{errors.password}</div>
-            )}
-          </div>
+  try {
+    const user = await User.findOne({ mobile });
+    if (!user) {
+      return res.status(401).json({ message: 'Invalid mobile number' });
+    }
 
-          {/* Confirm Password Field */}
-          <div className="form-group">
-            <label className="form-label">
-              <i className="bi bi-shield-lock-fill me-2"></i>Confirm Password
-            </label>
-            <input
-              type="password"
-              className={`form-control signup-input ${
-                errors.confirmPassword ? "is-invalid" : ""
-              }`}
-              value={confirmPassword}
-              onChange={(e) => setConfirmPassword(e.target.value)}
-              placeholder="Confirm your password"
-              maxLength={20}
-              required
-            />
-            {errors.confirmPassword && (
-              <div className="error-message">{errors.confirmPassword}</div>
-            )}
-          </div>
+    if (user.password && user.password !== '') {
+      if (!password) {
+        return res.status(401).json({ message: 'Password is required' });
+      }
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) {
+        return res.status(401).json({ message: 'Invalid password' });
+      }
+    }
 
-          {errors.general && (
-            <div className="alert-general">
-              <i className="bi bi-exclamation-triangle-fill me-2"></i>
-              {errors.general}
-            </div>
-          )}
+    user.lastLogin = new Date();
+    await user.save();
 
-          <button type="submit" className="signup-btn" disabled={isLoading}>
-            {isLoading ? (
-              <>
-                <span className="spinner-border spinner-border-sm me-2"></span>
-                Creating Account...
-              </>
-            ) : (
-              <>
-                <i className="bi bi-person-plus-fill me-2"></i>
-                Sign Up
-              </>
-            )}
-          </button>
+    const token = jwt.sign(
+      { id: user._id, role: user.role, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
 
-          <div className="signup-footer">
-            Already have an account?{" "}
-            <Link to="/login" className="login-link">
-              Login here
-            </Link>
-          </div>
-        </form>
-      </div>
+    res.status(200).json({
+      message: 'Login successful',
+      token,
+      role: user.role,
+      username: user.username
+    });
+  } catch (error) {
+    console.error('Login error:', error.message);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
-      {/* Success Modal */}
-      <Modal
-        show={showSuccess}
-        onHide={handleClose}
-        centered
-        className="success-modal"
-      >
-        <Modal.Header closeButton className="success-modal-header">
-          <Modal.Title>
-            <i className="bi bi-check-circle-fill me-2"></i>
-            Registration Successful!
-          </Modal.Title>
-        </Modal.Header>
-        <Modal.Body className="success-modal-body">
-          <div className="success-icon">
-            <i className="bi bi-emoji-smile-fill"></i>
-          </div>
-          <p>Your account has been created successfully!</p>
-          <p className="text-muted small">Please login to continue.</p>
-        </Modal.Body>
-        <Modal.Footer className="success-modal-footer">
-          <Button className="success-btn" onClick={handleClose}>
-            <i className="bi bi-box-arrow-in-right me-2"></i>
-            Go to Login
-          </Button>
-        </Modal.Footer>
-      </Modal>
-    </div>
-  );
-};
+// ==================== LOGOUT ====================
+app.post('/api/logout', (req, res) => {
+  if (req.session) {
+    req.session.destroy((err) => {
+      if (err) {
+        return res.status(500).json({ message: 'Could not log out' });
+      }
+      res.clearCookie('connect.sid');
+      res.status(200).json({ message: 'Logout successful' });
+    });
+  } else {
+    res.status(200).json({ message: 'Logout successful' });
+  }
+});
 
-export default SignUp;
+// ==================== FORGOT PASSWORD ====================
+app.post('/api/forgot-password', async (req, res) => {
+  const { mobile } = req.body;
+
+  if (!mobile) {
+    return res.status(400).json({ message: 'Mobile number is required' });
+  }
+
+  try {
+    const user = await User.findOne({ mobile });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpiry = new Date(Date.now() + 4 * 60 * 1000);
+
+    await OTP.deleteMany({ userId: user._id, verified: false });
+
+    const otpEntry = new OTP({
+      userId: user._id,
+      otp: otpCode,
+      expiresAt: otpExpiry
+    });
+    await otpEntry.save();
+
+    const otpSent = await sendOTP(mobile, otpCode);
+
+    if (otpSent) {
+      res.status(200).json({ message: 'OTP sent successfully' });
+    } else {
+      res.status(500).json({ message: 'Error sending OTP. Please try again.' });
+    }
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ==================== VERIFY OTP ====================
+app.post('/api/verify-otp', async (req, res) => {
+  const { mobile, otp } = req.body;
+
+  if (!mobile || !otp) {
+    return res.status(400).json({ message: 'Mobile and OTP are required' });
+  }
+
+  try {
+    const user = await User.findOne({ mobile });
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const otpEntry = await OTP.findOne({ userId: user._id, otp, verified: false });
+    if (!otpEntry) {
+      return res.status(400).json({ message: 'Invalid OTP' });
+    }
+
+    if (otpEntry.expiresAt < new Date()) {
+      return res.status(400).json({ message: 'OTP expired' });
+    }
+
+    otpEntry.verified = true;
+    await otpEntry.save();
+
+    res.status(200).json({ message: 'OTP verified successfully', userId: user._id });
+  } catch (error) {
+    console.error('OTP verification error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ==================== RESET PASSWORD ====================
+app.post('/api/reset-password', async (req, res) => {
+  const { userId, newPassword } = req.body;
+
+  if (!userId || !newPassword) {
+    return res.status(400).json({ message: 'User ID and new password are required' });
+  }
+
+  try {
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    const otpEntry = await OTP.findOne({ userId, verified: true }).sort({ createdAt: -1 });
+    if (!otpEntry) {
+      return res.status(400).json({ message: 'OTP not verified' });
+    }
+
+    user.password = await bcrypt.hash(newPassword, 10);
+    await user.save();
+
+    await OTP.deleteMany({ userId });
+
+    res.status(200).json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ==================== PROFILE ====================
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const userData = await User.findById(req.user.id).select('-password');
+    if (!userData) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.status(200).json(userData);
+  } catch (error) {
+    console.error('Profile fetch error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const { username, email, mobile, addr, password } = req.body;
+
+    const updateData = { username, email, mobile, addr };
+
+    if (password && password.trim() !== '') {
+      updateData.password = await bcrypt.hash(password, 10);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updateData,
+      { new: true, runValidators: true }
+    ).select('-password');
+
+    res.status(200).json(updatedUser);
+  } catch (error) {
+    console.error('Profile update error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ==================== ORDERS ====================
+app.post('/api/create-order', authenticateToken, async (req, res) => {
+  const { title, length, width, orderAmount } = req.body;
+
+  if (!title || !length || !width || !orderAmount) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  if (orderAmount <= 0) {
+    return res.status(400).json({ message: 'Order amount must be greater than 0' });
+  }
+
+  try {
+    const newOrder = new Order({
+      userId: req.user.id,
+      orderAmount,
+      title,
+      length,
+      width,
+      status: 'pending'
+    });
+
+    await newOrder.save();
+    res.status(201).json({ message: 'Order created successfully', order: newOrder });
+  } catch (error) {
+    console.error('Order creation error:', error);
+    res.status(500).json({ message: 'Error placing order. Please try again.' });
+  }
+});
+
+app.get('/api/orders', authenticateToken, async (req, res) => {
+  try {
+    let orders;
+    if (req.user.role === 'admin') {
+      orders = await Order.find().populate('userId', 'username email mobile');
+    } else {
+      orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
+    }
+    res.status(200).json({ orders });
+  } catch (error) {
+    console.error('Fetch orders error:', error);
+    res.status(500).json({ message: 'Error fetching orders' });
+  }
+});
+
+app.get('/api/my-orders', authenticateToken, async (req, res) => {
+  try {
+    const orders = await Order.find({ userId: req.user.id })
+      .populate('userId', 'username')
+      .sort({ createdAt: -1 });
+    res.status(200).json({ orders });
+  } catch (error) {
+    console.error('Fetch my orders error:', error);
+    res.status(500).json({ message: 'Error fetching your orders' });
+  }
+});
+
+app.post('/api/orders/update-status', authenticateToken, authorizeAdmin, async (req, res) => {
+  const { statusUpdates } = req.body;
+
+  if (!Array.isArray(statusUpdates) || statusUpdates.length === 0) {
+    return res.status(400).json({ message: 'Invalid status updates data' });
+  }
+
+  try {
+    const updatedOrders = [];
+    for (const { orderId, status } of statusUpdates) {
+      const order = await Order.findById(orderId);
+      if (order) {
+        order.status = status;
+        await order.save();
+        updatedOrders.push(order);
+      }
+    }
+    res.status(200).json({ message: 'Order statuses updated', updatedOrders });
+  } catch (error) {
+    console.error('Update status error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
+  const { orderId } = req.params;
+
+  try {
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (order.status !== 'pending') {
+      return res.status(400).json({ message: `Cannot cancel order with status '${order.status}'` });
+    }
+
+    if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not authorized to cancel this order' });
+    }
+
+    order.status = 'cancelled';
+    await order.save();
+
+    res.status(200).json({ message: 'Order cancelled successfully', order });
+  } catch (error) {
+    console.error('Cancel order error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
+  const { orderId } = req.params;
+  const { action, feedback } = req.body;
+
+  if (!action || (action !== 'accept' && action !== 'reject')) {
+    return res.status(400).json({ message: 'Invalid action. Must be "accept" or "reject"' });
+  }
+
+  if (action === 'reject' && (!feedback || feedback.trim().length === 0)) {
+    return res.status(400).json({ message: 'Feedback is required when rejecting an order' });
+  }
+
+  try {
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ message: 'Order not found' });
+    }
+
+    if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
+      return res.status(403).json({ message: 'Not authorized to review this order' });
+    }
+
+    if (order.status !== 'delivered') {
+      return res.status(400).json({ message: `Cannot review order with status '${order.status}'` });
+    }
+
+    order.status = action === 'accept' ? 'accepted' : 'rejected';
+    if (feedback) order.feedback = feedback;
+    await order.save();
+
+    res.status(200).json({ message: `Order ${action}ed successfully`, order });
+  } catch (error) {
+    console.error('Review order error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// ==================== SERVICES ====================
+app.get('/api/services', async (req, res) => {
+  try {
+    const services = await Service.find().sort({ createdAt: -1 });
+    res.status(200).json({ services });
+  } catch (error) {
+    console.error('Fetch services error:', error);
+    res.status(500).json({ message: 'Failed to fetch services' });
+  }
+});
+
+app.get('/api/services/:id', async (req, res) => {
+  try {
+    const service = await Service.findById(req.params.id);
+    if (!service) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+    res.status(200).json({ service });
+  } catch (error) {
+    console.error('Fetch service error:', error);
+    res.status(500).json({ message: 'Failed to fetch service' });
+  }
+});
+
+app.post('/api/services', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const { title, pricePerSquareFoot } = req.body;
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : '';
+
+    if (!title || !pricePerSquareFoot) {
+      return res.status(400).json({ message: 'Title and price are required' });
+    }
+
+    const newService = new Service({ title, imagePath, pricePerSquareFoot });
+    await newService.save();
+    res.status(201).json({ message: 'Service created', service: newService });
+  } catch (error) {
+    console.error('Create service error:', error);
+    res.status(500).json({ message: 'Failed to create service' });
+  }
+});
+
+app.put('/api/services/:id', authenticateToken, authorizeAdmin, upload.single('image'), async (req, res) => {
+  try {
+    const { title, pricePerSquareFoot } = req.body;
+    const imagePath = req.file ? `/uploads/${req.file.filename}` : req.body.imagePath;
+
+    const updatedService = await Service.findByIdAndUpdate(
+      req.params.id,
+      { title, pricePerSquareFoot, imagePath },
+      { new: true, runValidators: true }
+    );
+
+    if (!updatedService) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+    res.status(200).json({ message: 'Service updated', service: updatedService });
+  } catch (error) {
+    console.error('Update service error:', error);
+    res.status(500).json({ message: 'Failed to update service' });
+  }
+});
+
+app.delete('/api/services/:id', authenticateToken, authorizeAdmin, async (req, res) => {
+  try {
+    const deletedService = await Service.findByIdAndDelete(req.params.id);
+    if (!deletedService) {
+      return res.status(404).json({ message: 'Service not found' });
+    }
+    res.status(200).json({ message: 'Service deleted', service: deletedService });
+  } catch (error) {
+    console.error('Delete service error:', error);
+    res.status(500).json({ message: 'Failed to delete service' });
+  }
+});
+
+// ==================== ENQUIRIES ====================
+app.post('/api/enquiries', async (req, res) => {
+  const { name, email, mobile, subject, message } = req.body;
+
+  if (!name || !mobile || !subject || !message) {
+    return res.status(400).json({ message: 'Name, mobile, subject, and message are required' });
+  }
+
+  try {
+    const newEnquiry = new Enquiry({ name, email, mobile, subject, message });
+    await newEnquiry.save();
+    res.status(201).json({ message: 'Enquiry submitted successfully' });
+  } catch (error) {
+    console.error('Enquiry error:', error);
+    res.status(500).json({ message: 'Failed to submit enquiry' });
+  }
+});
+
+// ==================== STATIC UPLOADS ====================
+app.use('/uploads', express.static(uploadDir));
+
+// ==================== 404 ====================
+app.use((req, res) => {
+  res.status(404).json({ message: 'Route not found' });
+});
+
+// ==================== GLOBAL ERROR ====================
+app.use((err, req, res, next) => {
+  console.error('Global error:', err);
+  res.status(500).json({
+    message: 'Something went wrong!',
+    ...(process.env.NODE_ENV === 'development' && { error: err.message })
+  });
+});
+
+// ==================== EXPORT FOR VERCEL ====================
+export default app;
