@@ -13,7 +13,7 @@ import { dirname } from 'path';
 import path from 'path';
 import fs from 'fs';
 
-// Import sendOTP if it exists, otherwise use a dummy function
+// Import sendOTP if it exists
 let sendOTP;
 try {
   const otpModule = await import('./sendOTP.js');
@@ -73,6 +73,7 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 // ==================== MONGODB CONNECTION ====================
 const mongoURI = process.env.MONGO_URI;
+let isMongoConnected = false;
 
 if (!mongoURI) {
   console.error('❌ MONGO_URI is missing in environment variables');
@@ -81,8 +82,14 @@ if (!mongoURI) {
     serverSelectionTimeoutMS: 5000,
     socketTimeoutMS: 45000,
   })
-    .then(() => console.log('✅ MongoDB connected successfully'))
-    .catch(err => console.error('❌ MongoDB connection error:', err));
+    .then(() => {
+      isMongoConnected = true;
+      console.log('✅ MongoDB connected successfully');
+    })
+    .catch(err => {
+      console.error('❌ MongoDB connection error:', err);
+      isMongoConnected = false;
+    });
 }
 
 // ==================== SESSION ====================
@@ -181,7 +188,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ message: 'Unauthorized: Missing token' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret', (err, user) => {
     if (err) {
       console.error("JWT Verification Error:", err.message);
       return res.status(403).json({ message: 'Forbidden: Invalid or expired token' });
@@ -349,7 +356,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user._id, role: user.role, username: user.username },
-      process.env.JWT_SECRET || 'fallback_secret_key_for_dev',
+      process.env.JWT_SECRET || 'fallback_secret',
       { expiresIn: '24h' }
     );
 
@@ -377,103 +384,6 @@ app.post('/api/logout', (req, res) => {
     });
   } else {
     res.status(200).json({ message: 'Logout successful' });
-  }
-});
-
-// ==================== FORGOT PASSWORD ====================
-app.post('/api/forgot-password', async (req, res) => {
-  const { mobile } = req.body;
-
-  if (!mobile) {
-    return res.status(400).json({ message: 'Mobile number is required' });
-  }
-
-  try {
-    const user = await User.findOne({ mobile });
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const otpExpiry = new Date(Date.now() + 4 * 60 * 1000);
-
-    await OTP.deleteMany({ userId: user._id, verified: false });
-
-    const otpEntry = new OTP({
-      userId: user._id,
-      otp: otpCode,
-      expiresAt: otpExpiry
-    });
-    await otpEntry.save();
-
-    const otpSent = await sendOTP(mobile, otpCode);
-
-    if (otpSent) {
-      res.status(200).json({ message: 'OTP sent successfully' });
-    } else {
-      res.status(500).json({ message: 'Error sending OTP. Please try again.' });
-    }
-  } catch (error) {
-    console.error('Forgot password error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ==================== VERIFY OTP ====================
-app.post('/api/verify-otp', async (req, res) => {
-  const { mobile, otp } = req.body;
-
-  if (!mobile || !otp) {
-    return res.status(400).json({ message: 'Mobile and OTP are required' });
-  }
-
-  try {
-    const user = await User.findOne({ mobile });
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    const otpEntry = await OTP.findOne({ userId: user._id, otp, verified: false });
-    if (!otpEntry) {
-      return res.status(400).json({ message: 'Invalid OTP' });
-    }
-
-    if (otpEntry.expiresAt < new Date()) {
-      return res.status(400).json({ message: 'OTP expired' });
-    }
-
-    otpEntry.verified = true;
-    await otpEntry.save();
-
-    res.status(200).json({ message: 'OTP verified successfully', userId: user._id });
-  } catch (error) {
-    console.error('OTP verification error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
-// ==================== RESET PASSWORD ====================
-app.post('/api/reset-password', async (req, res) => {
-  const { userId, newPassword } = req.body;
-
-  if (!userId || !newPassword) {
-    return res.status(400).json({ message: 'User ID and new password are required' });
-  }
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: 'User not found' });
-
-    const otpEntry = await OTP.findOne({ userId, verified: true }).sort({ createdAt: -1 });
-    if (!otpEntry) {
-      return res.status(400).json({ message: 'OTP not verified' });
-    }
-
-    user.password = await bcrypt.hash(newPassword, 10);
-    await user.save();
-
-    await OTP.deleteMany({ userId });
-
-    res.status(200).json({ message: 'Password reset successfully' });
-  } catch (error) {
-    console.error('Reset password error:', error);
-    res.status(500).json({ message: 'Internal server error' });
   }
 });
 
@@ -753,17 +663,17 @@ app.post('/api/enquiries', async (req, res) => {
   }
 });
 
-// ==================== STATIC UPLOADS ====================
-app.use('/uploads', express.static(uploadDir));
-
 // ==================== TEST ROUTE ====================
 app.get('/api/test', (req, res) => {
   res.json({
     message: 'API is working!',
     timestamp: new Date().toISOString(),
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected'
+    mongodb: isMongoConnected ? 'connected' : 'disconnected'
   });
 });
+
+// ==================== STATIC UPLOADS ====================
+app.use('/uploads', express.static(uploadDir));
 
 // ==================== 404 ====================
 app.use((req, res) => {
