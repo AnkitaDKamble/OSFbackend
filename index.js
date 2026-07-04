@@ -20,34 +20,12 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ==================== MONGODB CONNECTION ====================
-const MONGODB_URI = process.env.MONGO_URI || "mongodb+srv://osf_user:j8bOADeAs2vKCA1c@cluster0.xxxxx.mongodb.net/OSF?retryWrites=true&w=majority&appName=Cluster0";
-
-console.log('🔍 Attempting to connect to MongoDB...');
+console.log('🔍 MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Not Set');
 
 let User = null;
 let isConnected = false;
 
-// Connect with proper options for serverless
-mongoose.connect(MONGODB_URI, {
-  serverSelectionTimeoutMS: 10000,
-  socketTimeoutMS: 45000,
-  family: 4 // Use IPv4
-})
-.then(() => {
-  isConnected = true;
-  console.log('✅ MongoDB connected successfully');
-  console.log('📊 Database:', mongoose.connection.name);
-})
-.catch(err => {
-  console.error('❌ MongoDB connection error:', err.message);
-  console.error('📋 Please check:');
-  console.error('   1. Network connectivity');
-  console.error('   2. IP whitelist (add 0.0.0.0/0)');
-  console.error('   3. Username/password correctness');
-  isConnected = false;
-});
-
-// ==================== USER SCHEMA ====================
+// Define schema
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
   email: { type: String, default: '', trim: true, lowercase: true },
@@ -61,34 +39,51 @@ const userSchema = new mongoose.Schema({
   collection: 'users'
 });
 
-// Only create model if not already created
-User = mongoose.models.User || mongoose.model('User', userSchema);
+// Connect to MongoDB
+if (process.env.MONGO_URI) {
+  mongoose.connect(process.env.MONGO_URI, {
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+  })
+  .then(() => {
+    isConnected = true;
+    console.log('✅ MongoDB connected successfully');
+    console.log('📊 Database:', mongoose.connection.name);
+    User = mongoose.models.User || mongoose.model('User', userSchema);
+  })
+  .catch(err => {
+    console.error('❌ MongoDB connection error:', err.message);
+    isConnected = false;
+  });
+}
 
-// ==================== HEALTH CHECK ====================
+// ==================== ROUTES ====================
+
+// Health check
 app.get('/', (req, res) => {
   res.json({
-    message: 'OSF Backend Running',
+    message: 'OSF Backend Running on Vercel',
     status: 'OK',
     timestamp: new Date().toISOString(),
     database: {
       connected: isConnected,
-      name: mongoose.connection.name || 'Not connected'
-    },
-    environment: {
-      nodeVersion: process.version,
-      mongoURI: process.env.MONGO_URI ? 'Set' : 'Not Set'
+      name: mongoose.connection?.name || 'Not connected'
     }
   });
 });
 
-// ==================== SIGNUP ROUTE ====================
+// GET signup
+app.get('/api/signup', (req, res) => {
+  res.json({ message: 'Signup route working. Use POST to register.' });
+});
+
+// POST signup
 app.post('/api/signup', async (req, res) => {
   console.log('📝 Signup request received');
   console.log('📦 Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    // Check database connection
-    if (!isConnected) {
+    if (!isConnected || !User) {
       console.log('❌ Database not connected');
       return res.status(503).json({
         message: 'Database is not connected. Please try again later.',
@@ -98,7 +93,7 @@ app.post('/api/signup', async (req, res) => {
 
     const { username, email, mobile, password, addr } = req.body;
 
-    // ===== VALIDATION =====
+    // Validation
     if (!username || !username.trim()) {
       return res.status(400).json({ message: 'Username is required' });
     }
@@ -114,7 +109,7 @@ app.post('/api/signup', async (req, res) => {
 
     console.log('✅ Validation passed');
 
-    // ===== CHECK EXISTING USER =====
+    // Check existing user
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
       console.log('❌ User exists with mobile:', mobile);
@@ -131,24 +126,25 @@ app.post('/api/signup', async (req, res) => {
 
     console.log('✅ User does not exist');
 
-    // ===== HASH PASSWORD =====
+    // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
     console.log('✅ Password hashed');
 
-    // ===== CREATE USER =====
+    // Create user
+    const userCount = await User.countDocuments();
     const newUser = new User({
       username: username.trim(),
       mobile: mobile.trim(),
       password: hashedPassword,
       email: email && email.trim() ? email.trim().toLowerCase() : '',
       addr: addr && addr.trim() ? addr.trim() : '',
-      role: await User.countDocuments() === 0 ? 'admin' : 'user'
+      role: userCount === 0 ? 'admin' : 'user'
     });
 
     await newUser.save();
     console.log('✅ User saved:', newUser._id);
 
-    // ===== GENERATE TOKEN =====
+    // Generate token
     const token = jwt.sign(
       { 
         id: newUser._id, 
@@ -159,7 +155,6 @@ app.post('/api/signup', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    // ===== SUCCESS RESPONSE =====
     res.status(201).json({
       message: 'User registered successfully',
       token,
@@ -176,20 +171,10 @@ app.post('/api/signup', async (req, res) => {
     console.error('❌ Signup error:', error.message);
     console.error('📋 Stack:', error.stack);
 
-    // Handle duplicate key error
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(400).json({ 
         message: `${field} already exists. Please use a different ${field}.`
-      });
-    }
-
-    // Handle validation errors
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(e => e.message);
-      return res.status(400).json({ 
-        message: 'Validation error',
-        errors: messages 
       });
     }
 
@@ -200,31 +185,5 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
-// ==================== TEST ROUTE ====================
-app.post('/api/test', (req, res) => {
-  res.json({
-    message: 'Test route works!',
-    body: req.body,
-    dbConnected: isConnected,
-    hasUserModel: !!User
-  });
-});
-
-// ==================== 404 HANDLER ====================
-app.use((req, res) => {
-  res.status(404).json({ 
-    message: 'Route not found',
-    path: req.path 
-  });
-});
-
-// ==================== ERROR HANDLER ====================
-app.use((err, req, res, next) => {
-  console.error('💥 Global error:', err.message);
-  res.status(500).json({
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
-
+// ==================== EXPORT ====================
 export default app;
