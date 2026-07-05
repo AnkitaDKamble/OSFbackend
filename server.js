@@ -10,7 +10,7 @@ dotenv.config();
 
 // ==================== CORS ====================
 app.use(cors({
-  origin: true,
+  origin: ['http://localhost:3000', 'http://localhost:5000', 'https://*.vercel.app'],
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
@@ -22,7 +22,6 @@ app.use(express.urlencoded({ extended: true }));
 // ==================== MONGODB CONNECTION ====================
 console.log('🔍 MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Not Set');
 
-let User = null;
 let isConnected = false;
 
 // Define schema
@@ -39,6 +38,14 @@ const userSchema = new mongoose.Schema({
   collection: 'users'
 });
 
+// Get User model
+const getUserModel = () => {
+  if (mongoose.models.User) {
+    return mongoose.models.User;
+  }
+  return mongoose.model('User', userSchema);
+};
+
 // Connect to MongoDB
 if (process.env.MONGO_URI) {
   mongoose.connect(process.env.MONGO_URI, {
@@ -49,7 +56,6 @@ if (process.env.MONGO_URI) {
     isConnected = true;
     console.log('✅ MongoDB connected successfully');
     console.log('📊 Database:', mongoose.connection.name);
-    User = mongoose.models.User || mongoose.model('User', userSchema);
   })
   .catch(err => {
     console.error('❌ MongoDB connection error:', err.message);
@@ -72,6 +78,15 @@ app.get('/', (req, res) => {
   });
 });
 
+// Test Route
+app.get('/api/test', (req, res) => {
+  res.json({
+    success: true,
+    message: 'API is working!',
+    timestamp: new Date().toISOString()
+  });
+});
+
 // GET signup
 app.get('/api/signup', (req, res) => {
   res.json({ message: 'Signup route working. Use POST to register.' });
@@ -83,7 +98,7 @@ app.post('/api/signup', async (req, res) => {
   console.log('📦 Body:', JSON.stringify(req.body, null, 2));
 
   try {
-    if (!isConnected || !User) {
+    if (!isConnected) {
       console.log('❌ Database not connected');
       return res.status(503).json({
         message: 'Database is not connected. Please try again later.',
@@ -91,6 +106,7 @@ app.post('/api/signup', async (req, res) => {
       });
     }
 
+    const User = getUserModel();
     const { username, email, mobile, password, addr } = req.body;
 
     // Validation
