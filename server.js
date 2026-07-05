@@ -10,7 +10,7 @@ dotenv.config();
 
 // ==================== CORS ====================
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5000', 'https://*.vercel.app'],
+  origin: '*',
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
