@@ -201,5 +201,9 @@ app.post('/api/signup', async (req, res) => {
   }
 });
 
+app.listen(5000, () => {
+  console.log("Started");
+});
+
 // ==================== EXPORT ====================
 export default app;
