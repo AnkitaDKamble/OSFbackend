@@ -10,12 +10,7 @@ dotenv.config();
 
 // ==================== CORS ====================
 // ✅ Allowed Origins
-const allowedOrigins = [
-  "http://localhost:3000",
-  "http://localhost:5000",
-  "https://os-fbackend.vercel.app",
-  "https://os-fbackend-o0e035bcl-ankitas-projects-060f1bcd.vercel.app"
-];
+const allowedOrigins = '*';
 
 // ✅ CORS Configuration (Improved)
 app.use(cors({
