@@ -46,22 +46,30 @@ const getUserModel = () => {
   return mongoose.model('User', userSchema);
 };
 
-// Connect to MongoDB
-if (process.env.MONGO_URI) {
-  mongoose.connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => {
+// ==================== CONNECT TO MONGODB ====================
+const connectDB = async () => {
+  try {
+    if (!process.env.MONGO_URI) {
+      console.error('❌ MONGO_URI is not set in environment variables');
+      return;
+    }
+    
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
+    
     isConnected = true;
     console.log('✅ MongoDB connected successfully');
     console.log('📊 Database:', mongoose.connection.name);
-  })
-  .catch(err => {
+  } catch (err) {
     console.error('❌ MongoDB connection error:', err.message);
     isConnected = false;
-  });
-}
+  }
+};
+
+// Call the connection function
+connectDB();
 
 // ==================== ROUTES ====================
 
@@ -101,6 +109,7 @@ app.post('/api/signup', async (req, res) => {
     if (!isConnected) {
       console.log('❌ Database not connected');
       return res.status(503).json({
+        success: false,
         message: 'Database is not connected. Please try again later.',
         status: 'error'
       });
@@ -109,18 +118,30 @@ app.post('/api/signup', async (req, res) => {
     const User = getUserModel();
     const { username, email, mobile, password, addr } = req.body;
 
-    // Validation
+    // ✅ Validation - Password minimum 1 character
     if (!username || !username.trim()) {
-      return res.status(400).json({ message: 'Username is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Username is required' 
+      });
     }
     if (!mobile || !mobile.trim()) {
-      return res.status(400).json({ message: 'Mobile number is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Mobile number is required' 
+      });
     }
     if (!/^\d{10}$/.test(mobile)) {
-      return res.status(400).json({ message: 'Mobile must be exactly 10 digits' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Mobile must be exactly 10 digits' 
+      });
     }
-    if (!password || password.length < 4) {
-      return res.status(400).json({ message: 'Password must be at least 4 characters' });
+    if (!password || password.length < 1) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Password must be at least 1 character' 
+      });
     }
 
     console.log('✅ Validation passed');
@@ -129,14 +150,20 @@ app.post('/api/signup', async (req, res) => {
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
       console.log('❌ User exists with mobile:', mobile);
-      return res.status(400).json({ message: 'User already exists with this mobile number' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'User already exists with this mobile number' 
+      });
     }
 
     if (email && email.trim()) {
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
       if (existingEmail) {
         console.log('❌ User exists with email:', email);
-        return res.status(400).json({ message: 'User already exists with this email' });
+        return res.status(400).json({ 
+          success: false,
+          message: 'User already exists with this email' 
+        });
       }
     }
 
@@ -172,6 +199,7 @@ app.post('/api/signup', async (req, res) => {
     );
 
     res.status(201).json({
+      success: true,
       message: 'User registered successfully',
       token,
       user: {
@@ -190,19 +218,17 @@ app.post('/api/signup', async (req, res) => {
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(400).json({ 
+        success: false,
         message: `${field} already exists. Please use a different ${field}.`
       });
     }
 
     res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
-});
-
-app.listen(5000, () => {
-  console.log("Started");
 });
 
 // ==================== EXPORT ====================
