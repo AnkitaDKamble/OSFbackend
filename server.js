@@ -9,15 +9,47 @@ const app = express();
 dotenv.config();
 
 // ==================== CORS ====================
+// ✅ Allowed Origins
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5000",
+  "https://os-fbackend.vercel.app",
+  "https://os-fbackend-o0e035bcl-ankitas-projects-060f1bcd.vercel.app"
+];
+
+// ✅ CORS Configuration (Improved)
 app.use(cors({
-  origin: '*',
-  credentials: true,
+  origin: function (origin, callback) {
+    // Allow requests without an origin (e.g. Postman)
+    if (!origin) return callback(null, true);
+    
+    // Check if origin is allowed
+    if (
+      allowedOrigins.includes(origin) ||
+      origin.endsWith(".vercel.app") ||
+      origin.includes("localhost")
+    ) {
+      return callback(null, true);
+    }
+    
+    return callback(new Error("Not allowed by CORS"));
+  },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
 }));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ==================== LOGGING MIDDLEWARE ====================
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  if (req.body && Object.keys(req.body).length > 0) {
+    console.log("Body:", req.body);
+  }
+  next();
+});
 
 // ==================== MONGODB CONNECTION ====================
 console.log('🔍 MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Not Set');
@@ -47,21 +79,29 @@ const getUserModel = () => {
 };
 
 // Connect to MongoDB
-if (process.env.MONGO_URI) {
-  mongoose.connect(process.env.MONGO_URI, {
-    serverSelectionTimeoutMS: 10000,
-    socketTimeoutMS: 45000,
-  })
-  .then(() => {
+const connectDB = async () => {
+  try {
+    if (!process.env.MONGO_URI) {
+      console.error('❌ MONGO_URI is not set in environment variables');
+      return;
+    }
+    
+    await mongoose.connect(process.env.MONGO_URI, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
+    
     isConnected = true;
     console.log('✅ MongoDB connected successfully');
     console.log('📊 Database:', mongoose.connection.name);
-  })
-  .catch(err => {
+  } catch (err) {
     console.error('❌ MongoDB connection error:', err.message);
     isConnected = false;
-  });
-}
+  }
+};
+
+// Call connection
+connectDB();
 
 // ==================== ROUTES ====================
 
@@ -74,6 +114,9 @@ app.get('/', (req, res) => {
     database: {
       connected: isConnected,
       name: mongoose.connection?.name || 'Not connected'
+    },
+    cors: {
+      allowedOrigins: allowedOrigins
     }
   });
 });
@@ -101,6 +144,7 @@ app.post('/api/signup', async (req, res) => {
     if (!isConnected) {
       console.log('❌ Database not connected');
       return res.status(503).json({
+        success: false,
         message: 'Database is not connected. Please try again later.',
         status: 'error'
       });
@@ -109,18 +153,30 @@ app.post('/api/signup', async (req, res) => {
     const User = getUserModel();
     const { username, email, mobile, password, addr } = req.body;
 
-    // Validation
+    // ✅ Validation - Password minimum 1 character
     if (!username || !username.trim()) {
-      return res.status(400).json({ message: 'Username is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Username is required' 
+      });
     }
     if (!mobile || !mobile.trim()) {
-      return res.status(400).json({ message: 'Mobile number is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Mobile number is required' 
+      });
     }
     if (!/^\d{10}$/.test(mobile)) {
-      return res.status(400).json({ message: 'Mobile must be exactly 10 digits' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Mobile must be exactly 10 digits' 
+      });
     }
-    if (!password || password.length < 4) {
-      return res.status(400).json({ message: 'Password must be at least 4 characters' });
+    if (!password || password.length < 1) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Password must be at least 1 character' 
+      });
     }
 
     console.log('✅ Validation passed');
@@ -129,14 +185,20 @@ app.post('/api/signup', async (req, res) => {
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
       console.log('❌ User exists with mobile:', mobile);
-      return res.status(400).json({ message: 'User already exists with this mobile number' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'User already exists with this mobile number' 
+      });
     }
 
     if (email && email.trim()) {
       const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
       if (existingEmail) {
         console.log('❌ User exists with email:', email);
-        return res.status(400).json({ message: 'User already exists with this email' });
+        return res.status(400).json({ 
+          success: false,
+          message: 'User already exists with this email' 
+        });
       }
     }
 
@@ -172,6 +234,7 @@ app.post('/api/signup', async (req, res) => {
     );
 
     res.status(201).json({
+      success: true,
       message: 'User registered successfully',
       token,
       user: {
@@ -190,20 +253,18 @@ app.post('/api/signup', async (req, res) => {
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
       return res.status(400).json({ 
+        success: false,
         message: `${field} already exists. Please use a different ${field}.`
       });
     }
 
     res.status(500).json({
+      success: false,
       message: 'Internal server error',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
-
-app.listen(5000, () => {
-  console.log("Started");
-  });
 
 // ==================== EXPORT ====================
 export default app;
