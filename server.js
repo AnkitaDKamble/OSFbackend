@@ -5,20 +5,32 @@ import bcrypt from 'bcrypt';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 
-const app = express();
+// ✅ Load environment variables
 dotenv.config();
 
-// ==================== CORS ====================
-// ✅ Allowed Origins
-const allowedOrigins = '*';
+const app = express();
 
-// ⚠️ Only if you don't need credentials
+// ==================== VERIFY ENV VARIABLES ====================
+console.log('🚀 Environment Variables Check:');
+console.log('✅ MONGO_URI:', process.env.MONGO_URI ? 'Set ✅' : 'Not Set ❌');
+console.log('✅ JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✅' : 'Not Set ❌');
+console.log('✅ NODE_ENV:', process.env.NODE_ENV || 'Not Set');
+
+if (process.env.MONGO_URI) {
+  const maskedURI = process.env.MONGO_URI.substring(0, 25) + '...';
+  console.log('📝 MONGO_URI starts with:', maskedURI);
+}
+
+// ==================== CORS ====================
+// ✅ CORS Configuration - Allow all origins for now
 app.use(cors({
   origin: '*',
-  // Remove credentials: true
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
 }));
+
+// Handle preflight requests
+app.options('*', cors());
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -27,14 +39,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   if (req.body && Object.keys(req.body).length > 0) {
-    console.log("Body:", req.body);
+    console.log("📦 Body:", req.body);
   }
   next();
 });
 
 // ==================== MONGODB CONNECTION ====================
-console.log('🔍 MONGO_URI:', process.env.MONGO_URI ? '✅ Set' : '❌ Not Set');
-
 let isConnected = false;
 
 // Define schema
@@ -62,12 +72,18 @@ const getUserModel = () => {
 // Connect to MongoDB
 const connectDB = async () => {
   try {
+    // Check if MONGO_URI exists
     if (!process.env.MONGO_URI) {
       console.error('❌ MONGO_URI is not set in environment variables');
+      console.log('💡 Please add MONGO_URI in Vercel Environment Variables');
       return;
     }
     
-    await mongoose.connect(process.env.MONGO_URI, {
+    // Use the environment variable directly
+    const uri = process.env.MONGO_URI;
+    console.log('🔄 Attempting to connect to MongoDB...');
+    
+    await mongoose.connect(uri, {
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
     });
@@ -75,8 +91,10 @@ const connectDB = async () => {
     isConnected = true;
     console.log('✅ MongoDB connected successfully');
     console.log('📊 Database:', mongoose.connection.name);
+    console.log('📊 Connection state:', mongoose.connection.readyState);
   } catch (err) {
     console.error('❌ MongoDB connection error:', err.message);
+    console.error('📋 Error details:', err);
     isConnected = false;
   }
 };
@@ -86,18 +104,26 @@ connectDB();
 
 // ==================== ROUTES ====================
 
-// Health check
+// Health check - Shows environment info
 app.get('/', (req, res) => {
   res.json({
     message: 'OSF Backend Running on Vercel',
     status: 'OK',
     timestamp: new Date().toISOString(),
-    database: {
-      connected: isConnected,
-      name: mongoose.connection?.name || 'Not connected'
-    },
-    cors: {
-      allowedOrigins: allowedOrigins
+    environment: {
+      node_env: process.env.NODE_ENV || 'development',
+      database: {
+        connected: isConnected,
+        name: mongoose.connection?.name || 'Not connected',
+        readyState: mongoose.connection?.readyState || 0
+      },
+      cors: {
+        allowedOrigins: '*'
+      },
+      env_vars: {
+        MONGO_URI: process.env.MONGO_URI ? 'Set ✅' : 'Not Set ❌',
+        JWT_SECRET: process.env.JWT_SECRET ? 'Set ✅' : 'Not Set ❌'
+      }
     }
   });
 });
@@ -113,7 +139,10 @@ app.get('/api/test', (req, res) => {
 
 // GET signup
 app.get('/api/signup', (req, res) => {
-  res.json({ message: 'Signup route working. Use POST to register.' });
+  res.json({ 
+    success: true,
+    message: 'Signup route working. Use POST to register.' 
+  });
 });
 
 // POST signup
@@ -122,6 +151,7 @@ app.post('/api/signup', async (req, res) => {
   console.log('📦 Body:', JSON.stringify(req.body, null, 2));
 
   try {
+    // Check database connection
     if (!isConnected) {
       console.log('❌ Database not connected');
       return res.status(503).json({
@@ -134,7 +164,7 @@ app.post('/api/signup', async (req, res) => {
     const User = getUserModel();
     const { username, email, mobile, password, addr } = req.body;
 
-    // ✅ Validation - Password minimum 1 character
+    // ✅ Validation
     if (!username || !username.trim()) {
       return res.status(400).json({ 
         success: false,
