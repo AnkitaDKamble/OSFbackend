@@ -14,25 +14,11 @@ const allowedOrigins = '*';
 
 // ✅ CORS Configuration (Improved)
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests without an origin (e.g. Postman)
-    if (!origin) return callback(null, true);
-    
-    // Check if origin is allowed
-    if (
-      allowedOrigins.includes(origin) ||
-      origin.endsWith(".vercel.app") ||
-      origin.includes("localhost")
-    ) {
-      return callback(null, true);
-    }
-    
-    return callback(new Error("Not allowed by CORS"));
-  },
+  origin: '*',
+  credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
-}));
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
