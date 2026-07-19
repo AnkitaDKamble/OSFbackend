@@ -12,13 +12,13 @@ dotenv.config();
 // ✅ Allowed Origins
 const allowedOrigins = '*';
 
-// ✅ CORS Configuration (Improved)
+// ⚠️ Only if you don't need credentials
 app.use(cors({
   origin: '*',
-  credentials: true,
+  // Remove credentials: true
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
-}));;
+}));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
