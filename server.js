@@ -35,21 +35,17 @@ if (MONGO_URI) {
 // ==================== CORS ====================
 // ✅ Allow both localhost and Vercel
 const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
+  'http://localhost:5000',
+  'http://127.0.0.1:5000',
   process.env.FRONTEND_URL || 'https://omkar-steel-fabricators-frontend.vercel.app'
 ];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-    
     if (allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
       return callback(null, true);
     }
-    
-    console.log('❌ CORS blocked for origin:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
@@ -101,12 +97,6 @@ const upload = multer({
 // ==================== LOGGING MIDDLEWARE ====================
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  if (req.body && Object.keys(req.body).length > 0) {
-    console.log("📦 Body:", req.body);
-  }
-  if (req.file) {
-    console.log("📸 File:", req.file.filename);
-  }
   next();
 });
 
@@ -158,35 +148,15 @@ const enquirySchema = new mongoose.Schema({
   message: { type: String, required: true, trim: true }
 }, { timestamps: true });
 
-// ✅ REGISTER MODELS PROPERLY
+// ✅ REGISTER MODELS
 let User, Service, Order, Enquiry;
 
 const registerModels = () => {
-  try {
-    User = mongoose.model('User');
-  } catch (error) {
-    User = mongoose.model('User', userSchema);
-  }
-  
-  try {
-    Service = mongoose.model('Service');
-  } catch (error) {
-    Service = mongoose.model('Service', serviceSchema);
-  }
-  
-  try {
-    Order = mongoose.model('Order');
-  } catch (error) {
-    Order = mongoose.model('Order', orderSchema);
-  }
-  
-  try {
-    Enquiry = mongoose.model('Enquiry');
-  } catch (error) {
-    Enquiry = mongoose.model('Enquiry', enquirySchema);
-  }
-  
-  console.log('✅ Models registered successfully');
+  User = mongoose.models.User || mongoose.model('User', userSchema);
+  Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
+  Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
+  Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
+  console.log('✅ Models registered');
 };
 
 // ✅ Connect to MongoDB
@@ -195,14 +165,9 @@ const connectDB = async () => {
     const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
     
     if (!uri) {
-      console.error('❌ No MongoDB URI found in environment variables');
-      console.log('💡 Please set MONGO_URI in .env file');
-      console.log('💡 Example: MONGO_URI="mongodb://localhost:27017/OSF"');
+      console.error('❌ No MongoDB URI found');
       return;
     }
-    
-    console.log('🔄 Attempting to connect to MongoDB...');
-    console.log('📡 URI:', uri.replace(/\/\/.*@/, '//<hidden>@'));
     
     await mongoose.connect(uri, {
       serverSelectionTimeoutMS: 10000,
@@ -210,14 +175,11 @@ const connectDB = async () => {
     });
     
     isConnected = true;
-    console.log('✅ MongoDB connected successfully');
-    console.log('📊 Database:', mongoose.connection.name);
-    
+    console.log('✅ MongoDB connected');
     registerModels();
     
   } catch (err) {
-    console.error('❌ MongoDB connection error:', err.message);
-    console.error('💡 Make sure MongoDB is running on your system');
+    console.error('❌ MongoDB error:', err.message);
     isConnected = false;
   }
 };
@@ -230,19 +192,12 @@ const authenticateToken = (req, res, next) => {
   const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
-    return res.status(401).json({ 
-      success: false,
-      message: 'Authentication token not found. Please log in.' 
-    });
+    return res.status(401).json({ success: false, message: 'Please log in.' });
   }
 
   jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key', (err, user) => {
     if (err) {
-      console.error('❌ JWT Verification Error:', err.message);
-      return res.status(403).json({ 
-        success: false,
-        message: 'Invalid or expired token. Please log in again.' 
-      });
+      return res.status(403).json({ success: false, message: 'Invalid token. Please log in again.' });
     }
     req.user = user;
     next();
@@ -251,126 +206,54 @@ const authenticateToken = (req, res, next) => {
 
 // ==================== ROUTES ====================
 
-// Health check
 app.get('/', (req, res) => {
   res.json({
     message: 'Omkar Steel Fabricators Backend',
     status: 'OK',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    database: {
-      connected: isConnected,
-      name: mongoose.connection?.name || 'Not connected'
-    },
-    environment: process.env.NODE_ENV || 'development'
+    database: { connected: isConnected }
   });
 });
 
-// Test Route
 app.get('/api/test', (req, res) => {
-  res.json({
-    success: true,
-    message: 'API is working!',
-    timestamp: new Date().toISOString()
-  });
+  res.json({ success: true, message: 'API is working!' });
 });
 
-// GET signup
-app.get('/api/signup', (req, res) => {
-  res.json({ 
-    success: true,
-    message: 'Signup route working. Use POST to register.' 
-  });
-});
-
-// ==================== SIGNUP ROUTE ====================
+// ==================== SIGNUP ====================
 app.post('/api/signup', async (req, res) => {
-  console.log('📝 Signup request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-
   try {
     if (!isConnected) {
-      console.log('❌ Database not connected');
-      return res.status(503).json({
-        success: false,
-        message: 'Database is not connected. Please try again later.',
-        status: 'error'
-      });
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
     }
 
     const { username, email, mobile, password, addr } = req.body;
 
-    if (!username || !username.trim()) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Username is required' 
-      });
-    }
-    if (!mobile || !mobile.trim()) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Mobile number is required' 
-      });
+    if (!username || !mobile || !password) {
+      return res.status(400).json({ success: false, message: 'Username, mobile, password required' });
     }
     if (!/^\d{10}$/.test(mobile)) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Mobile must be exactly 10 digits' 
-      });
+      return res.status(400).json({ success: false, message: 'Mobile must be 10 digits' });
     }
-    if (!password || password.length < 1) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Password must be at least 1 character' 
-      });
-    }
-
-    console.log('✅ Validation passed');
 
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
-      console.log('❌ User exists with mobile:', mobile);
-      return res.status(400).json({ 
-        success: false,
-        message: 'User already exists with this mobile number' 
-      });
+      return res.status(400).json({ success: false, message: 'Mobile already exists' });
     }
-
-    if (email && email.trim()) {
-      const existingEmail = await User.findOne({ email: email.trim().toLowerCase() });
-      if (existingEmail) {
-        console.log('❌ User exists with email:', email);
-        return res.status(400).json({ 
-          success: false,
-          message: 'User already exists with this email' 
-        });
-      }
-    }
-
-    console.log('✅ User does not exist');
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    console.log('✅ Password hashed');
-
     const userCount = await User.countDocuments();
     const newUser = new User({
       username: username.trim(),
       mobile: mobile.trim(),
       password: hashedPassword,
-      email: email && email.trim() ? email.trim().toLowerCase() : '',
-      addr: addr && addr.trim() ? addr.trim() : '',
+      email: email ? email.trim().toLowerCase() : '',
+      addr: addr ? addr.trim() : '',
       role: userCount === 0 ? 'admin' : 'user'
     });
 
     await newUser.save();
-    console.log('✅ User saved:', newUser._id);
 
     const token = jwt.sign(
-      { 
-        id: newUser._id, 
-        username: newUser.username,
-        role: newUser.role 
-      },
+      { id: newUser._id, username: newUser.username, role: newUser.role },
       process.env.JWT_SECRET || 'fallback_secret_key',
       { expiresIn: '7d' }
     );
@@ -379,93 +262,45 @@ app.post('/api/signup', async (req, res) => {
       success: true,
       message: 'User registered successfully',
       token,
-      user: {
-        id: newUser._id,
-        username: newUser.username,
-        mobile: newUser.mobile,
-        email: newUser.email,
-        role: newUser.role
-      }
+      user: { id: newUser._id, username: newUser.username, role: newUser.role }
     });
 
   } catch (error) {
-    console.error('❌ Signup error:', error.message);
-    console.error('📋 Stack:', error.stack);
-
     if (error.code === 11000) {
-      const field = Object.keys(error.keyPattern)[0];
-      return res.status(400).json({ 
-        success: false,
-        message: `${field} already exists. Please use a different ${field}.`
-      });
+      return res.status(400).json({ success: false, message: 'User already exists' });
     }
-
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ==================== LOGIN ROUTE ====================
+// ==================== LOGIN ====================
 app.post('/api/login', async (req, res) => {
-  console.log('📝 Login request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-
   try {
     if (!isConnected) {
-      console.log('❌ Database not connected');
-      return res.status(503).json({
-        success: false,
-        message: 'Database is not connected. Please try again later.'
-      });
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
     }
 
     const { mobile, password } = req.body;
 
-    if (!mobile || !mobile.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Mobile number is required'
-      });
-    }
-    if (!password || password.length < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Password is required'
-      });
+    if (!mobile || !password) {
+      return res.status(400).json({ success: false, message: 'Mobile and password required' });
     }
 
     const user = await User.findOne({ mobile: mobile.trim() });
     if (!user) {
-      console.log('❌ User not found with mobile:', mobile);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid mobile number or password'
-      });
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      console.log('❌ Password does not match for user:', mobile);
-      return res.status(401).json({
-        success: false,
-        message: 'Invalid mobile number or password'
-      });
+      return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
-
-    console.log('✅ Login successful for:', user.username);
 
     user.lastLogin = new Date();
     await user.save();
 
     const token = jwt.sign(
-      {
-        id: user._id,
-        username: user.username,
-        role: user.role
-      },
+      { id: user._id, username: user.username, role: user.role },
       process.env.JWT_SECRET || 'fallback_secret_key',
       { expiresIn: '7d' }
     );
@@ -475,43 +310,21 @@ app.post('/api/login', async (req, res) => {
       message: 'Login successful',
       token,
       role: user.role,
-      username: user.username,
-      user: {
-        id: user._id,
-        username: user.username,
-        mobile: user.mobile,
-        email: user.email,
-        role: user.role
-      }
+      username: user.username
     });
 
   } catch (error) {
-    console.error('❌ Login error:', error.message);
-    console.error('📋 Stack:', error.stack);
-
-    res.status(500).json({
-      success: false,
-      message: 'Internal server error'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ==================== PROFILE ROUTES ====================
-
-// ✅ Get Profile (Authenticated)
+// ==================== PROFILE ====================
 app.get('/api/profile', authenticateToken, async (req, res) => {
-  console.log('📝 Fetching profile for user ID:', req.user.id);
-  
   try {
     const user = await User.findById(req.user.id).select('-password');
-    
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
     res.status(200).json({
       success: true,
       username: user.username,
@@ -521,101 +334,51 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       role: user.role
     });
   } catch (error) {
-    console.error('❌ Error fetching profile:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch profile: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Update Profile (Authenticated)
 app.put('/api/profile', authenticateToken, async (req, res) => {
-  console.log('📝 Update profile for user ID:', req.user.id);
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-  
   try {
     const { username, email, mobile, addr, password } = req.body;
-    
     const user = await User.findById(req.user.id);
     if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
-    
+
     if (username) user.username = username.trim();
     if (email !== undefined) user.email = email.trim();
     if (mobile) user.mobile = mobile.trim();
     if (addr !== undefined) user.addr = addr.trim();
-    
     if (password && password.trim() !== '') {
       user.password = await bcrypt.hash(password, 10);
     }
-    
+
     await user.save();
-    console.log('✅ Profile updated for user:', user.username);
-    
     res.status(200).json({
       success: true,
-      message: 'Profile updated successfully',
+      message: 'Profile updated',
       username: user.username,
       email: user.email,
       mobile: user.mobile,
-      addr: user.addr,
-      role: user.role
+      addr: user.addr
     });
   } catch (error) {
-    console.error('❌ Error updating profile:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update profile: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ==================== ENQUIRY ROUTES ====================
-
-// ✅ Submit Enquiry (Public - No authentication needed)
+// ==================== ENQUIRY ====================
 app.post('/api/enquiries', async (req, res) => {
-  console.log('📝 Enquiry request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-
   try {
     if (!isConnected) {
-      console.log('❌ Database not connected');
-      return res.status(503).json({
-        success: false,
-        message: 'Database is not connected. Please try again later.'
-      });
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
     }
 
     const { name, email, mobile, subject, message } = req.body;
 
-    if (!name || !name.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Name is required'
-      });
-    }
-    if (!mobile || !mobile.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Mobile number is required'
-      });
-    }
-    if (!subject || !subject.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Subject is required'
-      });
-    }
-    if (!message || !message.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Message is required'
-      });
+    if (!name || !mobile || !subject || !message) {
+      return res.status(400).json({ success: false, message: 'All fields required' });
     }
 
     const newEnquiry = new Enquiry({
@@ -627,278 +390,94 @@ app.post('/api/enquiries', async (req, res) => {
     });
 
     await newEnquiry.save();
-    console.log('✅ Enquiry saved successfully:', newEnquiry._id);
-
-    res.status(201).json({
-      success: true,
-      message: 'Enquiry submitted successfully',
-      enquiry: newEnquiry
-    });
+    res.status(201).json({ success: true, message: 'Enquiry submitted' });
 
   } catch (error) {
-    console.error('❌ Error saving enquiry:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to submit enquiry: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Get all enquiries (Admin only)
-app.get('/api/enquiries', authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
-    }
-
-    const enquiries = await Enquiry.find().sort({ createdAt: -1 });
-    
-    res.status(200).json({
-      success: true,
-      enquiries: enquiries
-    });
-  } catch (error) {
-    console.error('❌ Error fetching enquiries:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch enquiries'
-    });
-  }
-});
-
-// ==================== SERVICE ROUTES ====================
-
-// ✅ Get all services (Public - No authentication needed)
+// ==================== SERVICES ====================
 app.get('/api/services', async (req, res) => {
   try {
     const services = await Service.find().sort({ createdAt: -1 });
-    
-    res.status(200).json({
-      success: true,
-      services: services
-    });
+    res.status(200).json({ success: true, services });
   } catch (error) {
-    console.error('❌ Error fetching services:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch services'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Get single service (Public)
-app.get('/api/services/:id', async (req, res) => {
-  try {
-    const service = await Service.findById(req.params.id);
-    
-    if (!service) {
-      return res.status(404).json({
-        success: false,
-        message: 'Service not found'
-      });
-    }
-    
-    res.status(200).json({
-      success: true,
-      service: service
-    });
-  } catch (error) {
-    console.error('❌ Error fetching service:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch service'
-    });
-  }
-});
-
-// ✅ Create service with image upload (Admin only)
 app.post('/api/services', authenticateToken, upload.single('image'), async (req, res) => {
-  console.log('📝 Create service request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-  console.log('📸 File:', req.file);
-
   try {
     if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
+      return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
     const { title, pricePerSquareFoot } = req.body;
-
-    if (!title || !title.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title is required'
-      });
-    }
-    if (!pricePerSquareFoot || pricePerSquareFoot <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Price must be greater than 0'
-      });
+    if (!title || !pricePerSquareFoot) {
+      return res.status(400).json({ success: false, message: 'Title and price required' });
     }
 
     const imagePath = req.file ? `/uploads/${req.file.filename}` : '';
-
     const newService = new Service({
       title: title.trim(),
       pricePerSquareFoot: parseFloat(pricePerSquareFoot),
-      imagePath: imagePath
+      imagePath
     });
 
     await newService.save();
-    console.log('✅ Service created:', newService._id);
-
-    res.status(201).json({
-      success: true,
-      message: 'Service created successfully',
-      service: newService
-    });
+    res.status(201).json({ success: true, message: 'Service created', service: newService });
 
   } catch (error) {
-    console.error('❌ Error creating service:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create service: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Update service with image upload (Admin only)
 app.put('/api/services/:id', authenticateToken, upload.single('image'), async (req, res) => {
-  console.log('📝 Update service request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-  console.log('📸 File:', req.file);
-
   try {
     if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
+      return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
     const { title, pricePerSquareFoot } = req.body;
-
     const service = await Service.findById(req.params.id);
     if (!service) {
-      return res.status(404).json({
-        success: false,
-        message: 'Service not found'
-      });
+      return res.status(404).json({ success: false, message: 'Service not found' });
     }
 
-    if (title && title.trim()) service.title = title.trim();
-    if (pricePerSquareFoot && pricePerSquareFoot > 0) {
-      service.pricePerSquareFoot = parseFloat(pricePerSquareFoot);
-    }
-    
-    if (req.file) {
-      service.imagePath = `/uploads/${req.file.filename}`;
-    }
+    if (title) service.title = title.trim();
+    if (pricePerSquareFoot) service.pricePerSquareFoot = parseFloat(pricePerSquareFoot);
+    if (req.file) service.imagePath = `/uploads/${req.file.filename}`;
 
     await service.save();
-    console.log('✅ Service updated:', service._id);
-
-    res.status(200).json({
-      success: true,
-      message: 'Service updated successfully',
-      service: service
-    });
+    res.status(200).json({ success: true, message: 'Service updated', service });
 
   } catch (error) {
-    console.error('❌ Error updating service:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update service: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Delete service (Admin only)
 app.delete('/api/services/:id', authenticateToken, async (req, res) => {
-  console.log('📝 Delete service request received');
-
   try {
     if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
-    }
-
-    const service = await Service.findById(req.params.id);
-    
-    if (!service) {
-      return res.status(404).json({
-        success: false,
-        message: 'Service not found'
-      });
+      return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
     await Service.findByIdAndDelete(req.params.id);
-    console.log('✅ Service deleted:', req.params.id);
-
-    res.status(200).json({
-      success: true,
-      message: 'Service deleted successfully'
-    });
+    res.status(200).json({ success: true, message: 'Service deleted' });
 
   } catch (error) {
-    console.error('❌ Error deleting service:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to delete service'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ==================== ORDER ROUTES ====================
-
-// ✅ Create Order (Authenticated)
+// ==================== ORDERS ====================
 app.post('/api/create-order', authenticateToken, async (req, res) => {
-  console.log('📝 Create order request received');
-  console.log('📦 Body:', JSON.stringify(req.body, null, 2));
-
   try {
-    if (!isConnected) {
-      console.log('❌ Database not connected');
-      return res.status(503).json({
-        success: false,
-        message: 'Database is not connected. Please try again later.'
-      });
-    }
-
     const { title, length, width, orderAmount } = req.body;
 
-    if (!title || !title.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title is required'
-      });
-    }
-    if (!length || length <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Length must be greater than 0'
-      });
-    }
-    if (!width || width <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Width must be greater than 0'
-      });
-    }
-    if (!orderAmount || orderAmount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Order amount must be greater than 0'
-      });
+    if (!title || !length || !width || !orderAmount) {
+      return res.status(400).json({ success: false, message: 'All fields required' });
     }
 
     const newOrder = new Order({
@@ -911,150 +490,75 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
     });
 
     await newOrder.save();
-    console.log('✅ Order created:', newOrder._id);
-
-    res.status(201).json({
-      success: true,
-      message: 'Order created successfully',
-      order: newOrder
-    });
+    res.status(201).json({ success: true, message: 'Order created', order: newOrder });
 
   } catch (error) {
-    console.error('❌ Error creating order:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create order: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Get all orders (Admin sees all, User sees own)
-app.get('/api/orders', authenticateToken, async (req, res) => {
-  try {
-    let orders;
-
-    if (req.user.role === 'admin') {
-      orders = await Order.find().populate('userId', 'username email mobile');
-    } else {
-      orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
-    }
-
-    res.status(200).json({
-      success: true,
-      orders: orders
-    });
-  } catch (error) {
-    console.error('❌ Error fetching orders:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch orders'
-    });
-  }
-});
-
-// ✅ Get logged-in user's orders
 app.get('/api/my-orders', authenticateToken, async (req, res) => {
-  console.log('📝 Fetching user orders for user ID:', req.user.id);
-  
   try {
     const orders = await Order.find({ userId: req.user.id })
       .populate('userId', 'username')
       .sort({ createdAt: -1 });
 
-    console.log(`✅ Found ${orders.length} orders for user`);
+    res.status(200).json({ success: true, orders });
 
-    res.status(200).json({
-      success: true,
-      orders: orders
-    });
   } catch (error) {
-    console.error('❌ Error fetching user orders:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch your orders: ' + error.message
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Cancel Order
-app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
-  const { orderId } = req.params;
-
+app.get('/api/orders', authenticateToken, async (req, res) => {
   try {
-    const order = await Order.findById(orderId);
+    let orders;
+    if (req.user.role === 'admin') {
+      orders = await Order.find().populate('userId', 'username email mobile');
+    } else {
+      orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
+    }
+    res.status(200).json({ success: true, orders });
 
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
+  try {
+    const order = await Order.findById(req.params.orderId);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
     if (order.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot cancel order with status '${order.status}'`
-      });
+      return res.status(400).json({ success: false, message: 'Cannot cancel this order' });
     }
 
     if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to cancel this order'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
     order.status = 'cancelled';
     await order.save();
+    res.status(200).json({ success: true, message: 'Order cancelled', order });
 
-    res.status(200).json({
-      success: true,
-      message: 'Order cancelled successfully',
-      order: order
-    });
   } catch (error) {
-    console.error('❌ Error cancelling order:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to cancel order'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Review Order (Accept/Reject after delivery)
 app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
-  const { orderId } = req.params;
-  const { action, feedback } = req.body;
-
   try {
-    const order = await Order.findById(orderId);
-
+    const { action, feedback } = req.body;
+    const order = await Order.findById(req.params.orderId);
     if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-
-    if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized to review this order'
-      });
+      return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
     if (order.status !== 'delivered') {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot review order with status '${order.status}'`
-      });
-    }
-
-    if (action === 'reject' && (!feedback || feedback.trim().length === 0)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Feedback is required when rejecting an order'
-      });
+      return res.status(400).json({ success: false, message: 'Cannot review this order' });
     }
 
     if (action === 'accept') {
@@ -1062,41 +566,25 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
     } else if (action === 'reject') {
       order.status = 'rejected';
     } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid action. Must be "accept" or "reject"'
-      });
+      return res.status(400).json({ success: false, message: 'Invalid action' });
     }
 
     if (feedback) order.feedback = feedback;
     await order.save();
+    res.status(200).json({ success: true, message: `Order ${action}ed`, order });
 
-    res.status(200).json({
-      success: true,
-      message: `Order ${action}ed successfully`,
-      order: order
-    });
   } catch (error) {
-    console.error('❌ Error reviewing order:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to review order'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
-// ✅ Update order status (Admin only)
 app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
-  const { statusUpdates } = req.body;
-
   try {
     if (req.user.role !== 'admin') {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied. Admin only.'
-      });
+      return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
+    const { statusUpdates } = req.body;
     const updatedOrders = [];
 
     for (const { orderId, status } of statusUpdates) {
@@ -1108,61 +596,23 @@ app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
       }
     }
 
-    res.status(200).json({
-      success: true,
-      message: 'Order statuses updated successfully',
-      updatedOrders: updatedOrders
-    });
+    res.status(200).json({ success: true, message: 'Statuses updated', updatedOrders });
+
   } catch (error) {
-    console.error('❌ Error updating order statuses:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to update order statuses'
-    });
+    res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // ==================== STATIC FILES ====================
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ==================== ERROR HANDLING ====================
-
-// 404 Handler
-app.use((req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Route not found'
-  });
-});
-
-// Global Error Handler
-app.use((err, req, res, next) => {
-  console.error('❌ Global error:', err);
-  res.status(500).json({
-    success: false,
-    message: 'Something went wrong!',
-    error: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
-
 // ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
 
-// ✅ Works on both localhost and Vercel
 if (process.env.NODE_ENV !== 'production') {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`📡 Test API: http://localhost:${PORT}/api/test`);
-    console.log(`📡 Signup API: http://localhost:${PORT}/api/signup`);
-    console.log(`📡 Login API: http://localhost:${PORT}/api/login`);
-    console.log(`📡 Profile API: http://localhost:${PORT}/api/profile`);
-    console.log(`📡 Enquiry API: http://localhost:${PORT}/api/enquiries`);
-    console.log(`📡 Services API: http://localhost:${PORT}/api/services`);
-    console.log(`📡 Orders API: http://localhost:${PORT}/api/orders`);
-    console.log(`📡 My Orders API: http://localhost:${PORT}/api/my-orders`);
-    console.log(`📁 Uploads folder: ${uploadDir}`);
   });
 }
 
-// ✅ Export for Vercel
 export default app;

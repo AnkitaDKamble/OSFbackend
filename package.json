@@ -1,6 +1,7 @@
 {
   "name": "omkar-steel-fabricators-backend",
   "version": "1.0.0",
+  "description": "Backend API for Omkar Steel Fabricators",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -18,5 +19,7 @@
   },
   "devDependencies": {
     "nodemon": "^3.0.0"
-  }
+  },
+  "author": "Omkar Steel Fabricators",
+  "license": "ISC"
 }
