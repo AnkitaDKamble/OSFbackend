@@ -18,107 +18,92 @@ dotenv.config();
 
 const app = express();
 
-// ==================== ENV SETUP ====================
+// ==================== VERIFY ENV VARIABLES ====================
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key';
-const IS_VERCEL = !!process.env.VERCEL;
-const IS_PROD = process.env.NODE_ENV === 'production' || IS_VERCEL;
 
-console.log('🚀 Environment Check:');
-console.log('  MONGO_URI:', MONGO_URI ? 'Set ✅' : 'Not Set ❌');
-console.log('  JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✅' : 'Using fallback ⚠️');
-console.log('  NODE_ENV:', process.env.NODE_ENV || 'development');
-console.log('  Platform:', IS_VERCEL ? 'Vercel' : 'Local');
+console.log('🚀 Environment Variables Check:');
+console.log('✅ MONGO_URI:', MONGO_URI ? 'Set ✅' : 'Not Set ❌');
+console.log('✅ JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✅' : 'Not Set ❌');
+console.log('✅ PORT:', process.env.PORT || 5000);
+console.log('✅ NODE_ENV:', process.env.NODE_ENV || 'development');
 
-// Only log the start of URI in non-production
-if (MONGO_URI && !IS_PROD) {
-  console.log('  URI prefix:', MONGO_URI.substring(0, 30) + '...');
+if (MONGO_URI) {
+  const maskedURI = MONGO_URI.substring(0, 25) + '...';
+  console.log('📝 MONGO_URI starts with:', maskedURI);
 }
 
 // ==================== CORS ====================
+// ✅ Allow both localhost and Vercel
 const allowedOrigins = [
   'http://localhost:5000',
-  'http://localhost:5173',
-  'http://localhost:3000',
   'http://127.0.0.1:5000',
-  'http://127.0.0.1:5173',
-  process.env.FRONTEND_URL,
-].filter(Boolean);
+  process.env.FRONTEND_URL || 'https://omkar-steel-fabricators-frontend.vercel.app'
+];
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, same-origin)
     if (!origin) return callback(null, true);
-    if (
-      allowedOrigins.includes(origin) ||
-      origin.includes('vercel.app') ||
-      origin.includes('localhost') ||
-      origin.includes('127.0.0.1')
-    ) {
+    if (allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
       return callback(null, true);
     }
-    console.warn('⚠️ CORS blocked origin:', origin);
     return callback(new Error('Not allowed by CORS'));
   },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
 }));
 
-// Handle preflight for all routes
 app.options('*', cors());
 
 // ==================== MIDDLEWARE ====================
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// Request logger
+// ==================== FILE UPLOAD CONFIGURATION ====================
+const uploadDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log('📁 Uploads folder created');
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, uniqueSuffix + '-' + file.originalname);
+  }
+});
+
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = /jpeg|jpg|png|gif|webp/;
+  const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+  const mimetype = allowedTypes.test(file.mimetype);
+  
+  if (mimetype && extname) {
+    return cb(null, true);
+  } else {
+    cb(new Error('Only image files are allowed'), false);
+  }
+};
+
+const upload = multer({ 
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 }
+});
+
+// ==================== LOGGING MIDDLEWARE ====================
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
   next();
 });
 
-// ==================== FILE UPLOAD CONFIG ====================
-// Vercel: filesystem is read-only except /tmp
-// Local: use ./uploads
-const uploadDir = IS_VERCEL
-  ? '/tmp/uploads'
-  : path.join(__dirname, 'uploads');
+// ==================== MONGODB CONNECTION ====================
+let isConnected = false;
 
-try {
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-    console.log('📁 Uploads folder created:', uploadDir);
-  } else {
-    console.log('📁 Uploads folder exists:', uploadDir);
-  }
-} catch (err) {
-  console.warn('⚠️ Uploads folder setup failed:', err.message);
-}
-
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, uniqueSuffix + '-' + file.originalname);
-  },
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowed = /jpeg|jpg|png|gif|webp/;
-  const ext = allowed.test(path.extname(file.originalname).toLowerCase());
-  const mime = allowed.test(file.mimetype);
-  if (mime && ext) return cb(null, true);
-  cb(new Error('Only image files are allowed'), false);
-};
-
-const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
-});
-
-// ==================== MONGODB SCHEMAS ====================
+// Define User Schema
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, trim: true },
   email: { type: String, default: '', trim: true, lowercase: true },
@@ -126,96 +111,82 @@ const userSchema = new mongoose.Schema({
   password: { type: String, required: true },
   role: { type: String, default: 'user', enum: ['user', 'admin'] },
   addr: { type: String, default: '', trim: true },
-  lastLogin: { type: Date, default: Date.now },
-}, { timestamps: true, collection: 'users' });
+  lastLogin: { type: Date, default: Date.now }
+}, { 
+  timestamps: true,
+  collection: 'users'
+});
 
+// Define Service Schema
 const serviceSchema = new mongoose.Schema({
   title: { type: String, required: true, trim: true },
   imagePath: { type: String, default: '' },
-  pricePerSquareFoot: { type: Number, required: true, min: 0 },
+  pricePerSquareFoot: { type: Number, required: true, min: 0 }
 }, { timestamps: true });
 
+// Define Order Schema
 const orderSchema = new mongoose.Schema({
   userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
   orderAmount: { type: Number, required: true, min: 0 },
   title: { type: String, required: true, trim: true },
   length: { type: Number, required: true, min: 0 },
   width: { type: Number, required: true, min: 0 },
-  status: {
-    type: String,
+  status: { 
+    type: String, 
     default: 'pending',
-    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected'],
+    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected']
   },
-  feedback: { type: String, trim: true, default: '' },
+  feedback: { type: String, trim: true, default: '' }
 }, { timestamps: true });
 
+// Define Enquiry Schema
 const enquirySchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   email: { type: String, default: '', trim: true },
   mobile: { type: String, required: true, trim: true },
   subject: { type: String, required: true, trim: true },
-  message: { type: String, required: true, trim: true },
+  message: { type: String, required: true, trim: true }
 }, { timestamps: true });
 
-// Register models (idempotent — safe to import multiple times)
-const User = mongoose.models.User || mongoose.model('User', userSchema);
-const Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
-const Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
-const Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
+// ✅ REGISTER MODELS
+let User, Service, Order, Enquiry;
 
-// ==================== MONGODB CONNECTION (Vercel-safe) ====================
-// Cache the connection on globalThis so it survives across function invocations
-let cached = globalThis.__mongoose;
-if (!cached) {
-  cached = globalThis.__mongoose = { conn: null, promise: null };
-}
+const registerModels = () => {
+  User = mongoose.models.User || mongoose.model('User', userSchema);
+  Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
+  Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
+  Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
+  console.log('✅ Models registered');
+};
 
-async function connectDB() {
-  // Return existing healthy connection
-  if (cached.conn && mongoose.connection.readyState === 1) {
-    return cached.conn;
-  }
-
-  // Start a new connection if none in-flight
-  if (!cached.promise) {
-    if (!MONGO_URI) {
-      throw new Error('MONGO_URI is not set in environment variables');
+// ✅ Connect to MongoDB
+const connectDB = async () => {
+  try {
+    const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+    
+    if (!uri) {
+      console.error('❌ No MongoDB URI found');
+      return;
     }
-
-    console.log('🔌 Connecting to MongoDB...');
-
-    cached.promise = mongoose
-      .connect(MONGO_URI, {
-        serverSelectionTimeoutMS: 10000,
-        socketTimeoutMS: 45000,
-        bufferCommands: false, // fail fast instead of buffering
-        maxPoolSize: 10,
-      })
-      .then((m) => {
-        console.log('✅ MongoDB connected to DB:', m.connection.name);
-        return m;
-      })
-      .catch((err) => {
-        console.error('❌ MongoDB connection failed:', err.message);
-        cached.promise = null; // allow retry on next request
-        cached.conn = null;
-        throw err;
-      });
+    
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 10000,
+      socketTimeoutMS: 45000,
+    });
+    
+    isConnected = true;
+    console.log('✅ MongoDB connected');
+    registerModels();
+    
+  } catch (err) {
+    console.error('❌ MongoDB error:', err.message);
+    isConnected = false;
   }
+};
 
-  cached.conn = await cached.promise;
-  return cached.conn;
-}
+connectDB();
 
-// Helper: is the DB connected right now?
-const isDBConnected = () => mongoose.connection.readyState === 1;
-
-// Connection event listeners (helpful for debugging)
-mongoose.connection.on('error', (e) => console.error('Mongo error:', e.message));
-mongoose.connection.on('disconnected', () => console.warn('⚠️ Mongo disconnected'));
-mongoose.connection.on('reconnected', () => console.log('♻️ Mongo reconnected'));
-
-// ==================== AUTH MIDDLEWARE ====================
+// ==================== AUTHENTICATION MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
@@ -224,7 +195,7 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Please log in.' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key', (err, user) => {
     if (err) {
       return res.status(403).json({ success: false, message: 'Invalid token. Please log in again.' });
     }
@@ -233,42 +204,13 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ==================== ROOT / HEALTH ====================
-app.get('/', async (req, res) => {
-  let connected = isDBConnected();
-  let dbName = mongoose.connection.name || null;
-  let error = null;
+// ==================== ROUTES ====================
 
-  // On cold start, try to connect now
-  if (!connected) {
-    try {
-      await connectDB();
-      connected = isDBConnected();
-      dbName = mongoose.connection.name;
-    } catch (e) {
-      error = e.message;
-    }
-  }
-
-  res.status(connected ? 200 : 503).json({
+app.get('/', (req, res) => {
+  res.json({
     message: 'Omkar Steel Fabricators Backend',
-    status: connected ? 'OK' : 'DEGRADED',
-    timestamp: new Date().toISOString(),
-    environment: {
-      node_env: process.env.NODE_ENV || 'development',
-      platform: IS_VERCEL ? 'vercel' : 'local',
-      database: {
-        connected,
-        name: dbName,
-        readyState: mongoose.connection.readyState,
-        error,
-      },
-      cors: { allowedOrigins },
-      env_vars: {
-        MONGO_URI: MONGO_URI ? 'Set ✅' : 'Not Set ❌',
-        JWT_SECRET: process.env.JWT_SECRET ? 'Set ✅' : 'Using fallback ⚠️',
-      },
-    },
+    status: 'OK',
+    database: { connected: isConnected }
   });
 });
 
@@ -279,7 +221,9 @@ app.get('/api/test', (req, res) => {
 // ==================== SIGNUP ====================
 app.post('/api/signup', async (req, res) => {
   try {
-    await connectDB();
+    if (!isConnected) {
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
+    }
 
     const { username, email, mobile, password, addr } = req.body;
 
@@ -297,21 +241,20 @@ app.post('/api/signup', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const userCount = await User.countDocuments();
-
     const newUser = new User({
       username: username.trim(),
       mobile: mobile.trim(),
       password: hashedPassword,
       email: email ? email.trim().toLowerCase() : '',
       addr: addr ? addr.trim() : '',
-      role: userCount === 0 ? 'admin' : 'user',
+      role: userCount === 0 ? 'admin' : 'user'
     });
 
     await newUser.save();
 
     const token = jwt.sign(
       { id: newUser._id, username: newUser.username, role: newUser.role },
-      JWT_SECRET,
+      process.env.JWT_SECRET || 'fallback_secret_key',
       { expiresIn: '7d' }
     );
 
@@ -319,13 +262,13 @@ app.post('/api/signup', async (req, res) => {
       success: true,
       message: 'User registered successfully',
       token,
-      user: { id: newUser._id, username: newUser.username, role: newUser.role },
+      user: { id: newUser._id, username: newUser.username, role: newUser.role }
     });
+
   } catch (error) {
     if (error.code === 11000) {
       return res.status(400).json({ success: false, message: 'User already exists' });
     }
-    console.error('Signup error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -333,7 +276,9 @@ app.post('/api/signup', async (req, res) => {
 // ==================== LOGIN ====================
 app.post('/api/login', async (req, res) => {
   try {
-    await connectDB();
+    if (!isConnected) {
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
+    }
 
     const { mobile, password } = req.body;
 
@@ -356,7 +301,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user._id, username: user.username, role: user.role },
-      JWT_SECRET,
+      process.env.JWT_SECRET || 'fallback_secret_key',
       { expiresIn: '7d' }
     );
 
@@ -365,10 +310,10 @@ app.post('/api/login', async (req, res) => {
       message: 'Login successful',
       token,
       role: user.role,
-      username: user.username,
+      username: user.username
     });
+
   } catch (error) {
-    console.error('Login error:', error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -376,7 +321,6 @@ app.post('/api/login', async (req, res) => {
 // ==================== PROFILE ====================
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     const user = await User.findById(req.user.id).select('-password');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -387,7 +331,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       email: user.email,
       mobile: user.mobile,
       addr: user.addr,
-      role: user.role,
+      role: user.role
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -396,7 +340,6 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
 
 app.put('/api/profile', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     const { username, email, mobile, addr, password } = req.body;
     const user = await User.findById(req.user.id);
     if (!user) {
@@ -418,7 +361,7 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
       username: user.username,
       email: user.email,
       mobile: user.mobile,
-      addr: user.addr,
+      addr: user.addr
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -428,7 +371,9 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
 // ==================== ENQUIRY ====================
 app.post('/api/enquiries', async (req, res) => {
   try {
-    await connectDB();
+    if (!isConnected) {
+      return res.status(503).json({ success: false, message: 'Database not connected.' });
+    }
 
     const { name, email, mobile, subject, message } = req.body;
 
@@ -441,11 +386,12 @@ app.post('/api/enquiries', async (req, res) => {
       email: email ? email.trim() : '',
       mobile: mobile.trim(),
       subject: subject.trim(),
-      message: message.trim(),
+      message: message.trim()
     });
 
     await newEnquiry.save();
     res.status(201).json({ success: true, message: 'Enquiry submitted' });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -454,7 +400,6 @@ app.post('/api/enquiries', async (req, res) => {
 // ==================== SERVICES ====================
 app.get('/api/services', async (req, res) => {
   try {
-    await connectDB();
     const services = await Service.find().sort({ createdAt: -1 });
     res.status(200).json({ success: true, services });
   } catch (error) {
@@ -464,8 +409,6 @@ app.get('/api/services', async (req, res) => {
 
 app.post('/api/services', authenticateToken, upload.single('image'), async (req, res) => {
   try {
-    await connectDB();
-
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
@@ -479,11 +422,12 @@ app.post('/api/services', authenticateToken, upload.single('image'), async (req,
     const newService = new Service({
       title: title.trim(),
       pricePerSquareFoot: parseFloat(pricePerSquareFoot),
-      imagePath,
+      imagePath
     });
 
     await newService.save();
     res.status(201).json({ success: true, message: 'Service created', service: newService });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -491,8 +435,6 @@ app.post('/api/services', authenticateToken, upload.single('image'), async (req,
 
 app.put('/api/services/:id', authenticateToken, upload.single('image'), async (req, res) => {
   try {
-    await connectDB();
-
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
@@ -509,6 +451,7 @@ app.put('/api/services/:id', authenticateToken, upload.single('image'), async (r
 
     await service.save();
     res.status(200).json({ success: true, message: 'Service updated', service });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -516,14 +459,13 @@ app.put('/api/services/:id', authenticateToken, upload.single('image'), async (r
 
 app.delete('/api/services/:id', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
-
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
     await Service.findByIdAndDelete(req.params.id);
     res.status(200).json({ success: true, message: 'Service deleted' });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -532,8 +474,6 @@ app.delete('/api/services/:id', authenticateToken, async (req, res) => {
 // ==================== ORDERS ====================
 app.post('/api/create-order', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
-
     const { title, length, width, orderAmount } = req.body;
 
     if (!title || !length || !width || !orderAmount) {
@@ -546,11 +486,12 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
       title: title.trim(),
       length: parseFloat(length),
       width: parseFloat(width),
-      status: 'pending',
+      status: 'pending'
     });
 
     await newOrder.save();
     res.status(201).json({ success: true, message: 'Order created', order: newOrder });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -558,11 +499,12 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
 
 app.get('/api/my-orders', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     const orders = await Order.find({ userId: req.user.id })
       .populate('userId', 'username')
       .sort({ createdAt: -1 });
+
     res.status(200).json({ success: true, orders });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -570,7 +512,6 @@ app.get('/api/my-orders', authenticateToken, async (req, res) => {
 
 app.get('/api/orders', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     let orders;
     if (req.user.role === 'admin') {
       orders = await Order.find().populate('userId', 'username email mobile');
@@ -578,6 +519,7 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
       orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
     }
     res.status(200).json({ success: true, orders });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -585,7 +527,6 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
 
 app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     const order = await Order.findById(req.params.orderId);
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
@@ -602,6 +543,7 @@ app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
     order.status = 'cancelled';
     await order.save();
     res.status(200).json({ success: true, message: 'Order cancelled', order });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -609,7 +551,6 @@ app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
 
 app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
     const { action, feedback } = req.body;
     const order = await Order.findById(req.params.orderId);
     if (!order) {
@@ -631,6 +572,7 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
     if (feedback) order.feedback = feedback;
     await order.save();
     res.status(200).json({ success: true, message: `Order ${action}ed`, order });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -638,8 +580,6 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
 
 app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
   try {
-    await connectDB();
-
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
@@ -657,33 +597,22 @@ app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
     }
 
     res.status(200).json({ success: true, message: 'Statuses updated', updatedOrders });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // ==================== STATIC FILES ====================
-app.use('/uploads', express.static(uploadDir));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ==================== START SERVER (LOCAL ONLY) ====================
+// ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
 
-if (!IS_VERCEL) {
-  // Local dev: connect once, then listen
-  connectDB()
-    .then(() => {
-      app.listen(PORT, () => {
-        console.log(`🚀 Server running on http://localhost:${PORT}`);
-      });
-    })
-    .catch((err) => {
-      console.error('❌ Failed to connect to MongoDB on startup:', err.message);
-      // Still start the server so you can debug via the / health route
-      app.listen(PORT, () => {
-        console.log(`⚠️ Server running on http://localhost:${PORT} (DB not connected)`);
-      });
-    });
+if (process.env.NODE_ENV !== 'production') {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+  });
 }
 
-// ✅ Export for Vercel serverless
 export default app;
