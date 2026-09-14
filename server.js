@@ -1,7 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import bcrypt from 'bcryptjs'; 
+import bcrypt from 'bcryptjs';
 import mongoose from 'mongoose';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
@@ -33,25 +33,33 @@ if (MONGO_URI) {
 }
 
 // ==================== CORS ====================
-// ✅ Allow both localhost and Vercel
 const allowedOrigins = [
   'http://localhost:5000',
   'http://127.0.0.1:5000',
-  process.env.FRONTEND_URL || 'https://omkar-steel-fabricators-frontend.vercel.app'
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  process.env.FRONTEND_URL || 'https://omkar-steel-fabricators-frontend.vercel.app',
 ];
 
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin) || origin.includes('vercel.app') || origin.includes('localhost')) {
-      return callback(null, true);
-    }
-    return callback(new Error('Not allowed by CORS'));
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true
-}));
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.includes('vercel.app') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1')
+      ) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true,
+  })
+);
 
 app.options('*', cors());
 
@@ -60,10 +68,19 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // ==================== FILE UPLOAD CONFIGURATION ====================
-const uploadDir = path.join(__dirname, 'uploads');
+// On Vercel, only /tmp is writable. On local, use ./uploads.
+const isProduction = process.env.NODE_ENV === 'production';
+const uploadDir = isProduction
+  ? '/tmp/uploads'
+  : path.join(__dirname, 'uploads');
+
 if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-  console.log('📁 Uploads folder created');
+  try {
+    fs.mkdirSync(uploadDir, { recursive: true });
+    console.log('📁 Uploads folder created:', uploadDir);
+  } catch (e) {
+    console.warn('⚠️ Could not create uploads dir:', e.message);
+  }
 }
 
 const storage = multer.diskStorage({
@@ -71,16 +88,16 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
     cb(null, uniqueSuffix + '-' + file.originalname);
-  }
+  },
 });
 
 const fileFilter = (req, file, cb) => {
   const allowedTypes = /jpeg|jpg|png|gif|webp/;
   const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
   const mimetype = allowedTypes.test(file.mimetype);
-  
+
   if (mimetype && extname) {
     return cb(null, true);
   } else {
@@ -88,10 +105,10 @@ const fileFilter = (req, file, cb) => {
   }
 };
 
-const upload = multer({ 
+const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
-  limits: { fileSize: 5 * 1024 * 1024 }
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
 // ==================== LOGGING MIDDLEWARE ====================
@@ -100,55 +117,67 @@ app.use((req, res, next) => {
   next();
 });
 
-// ==================== MONGODB CONNECTION ====================
-let isConnected = false;
-
-// Define User Schema
-const userSchema = new mongoose.Schema({
-  username: { type: String, required: true, trim: true },
-  email: { type: String, default: '', trim: true, lowercase: true },
-  mobile: { type: String, required: true, unique: true, trim: true },
-  password: { type: String, required: true },
-  role: { type: String, default: 'user', enum: ['user', 'admin'] },
-  addr: { type: String, default: '', trim: true },
-  lastLogin: { type: Date, default: Date.now }
-}, { 
-  timestamps: true,
-  collection: 'users'
-});
-
-// Define Service Schema
-const serviceSchema = new mongoose.Schema({
-  title: { type: String, required: true, trim: true },
-  imagePath: { type: String, default: '' },
-  pricePerSquareFoot: { type: Number, required: true, min: 0 }
-}, { timestamps: true });
-
-// Define Order Schema
-const orderSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  orderAmount: { type: Number, required: true, min: 0 },
-  title: { type: String, required: true, trim: true },
-  length: { type: Number, required: true, min: 0 },
-  width: { type: Number, required: true, min: 0 },
-  status: { 
-    type: String, 
-    default: 'pending',
-    enum: ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'accepted', 'rejected']
+// ==================== MONGODB SCHEMAS ====================
+const userSchema = new mongoose.Schema(
+  {
+    username: { type: String, required: true, trim: true },
+    email: { type: String, default: '', trim: true, lowercase: true },
+    mobile: { type: String, required: true, unique: true, trim: true },
+    password: { type: String, required: true },
+    role: { type: String, default: 'user', enum: ['user', 'admin'] },
+    addr: { type: String, default: '', trim: true },
+    lastLogin: { type: Date, default: Date.now },
   },
-  feedback: { type: String, trim: true, default: '' }
-}, { timestamps: true });
+  { timestamps: true, collection: 'users' }
+);
 
-// Define Enquiry Schema
-const enquirySchema = new mongoose.Schema({
-  name: { type: String, required: true, trim: true },
-  email: { type: String, default: '', trim: true },
-  mobile: { type: String, required: true, trim: true },
-  subject: { type: String, required: true, trim: true },
-  message: { type: String, required: true, trim: true }
-}, { timestamps: true });
+const serviceSchema = new mongoose.Schema(
+  {
+    title: { type: String, required: true, trim: true },
+    imagePath: { type: String, default: '' },
+    pricePerSquareFoot: { type: Number, required: true, min: 0 },
+  },
+  { timestamps: true }
+);
 
-// ✅ REGISTER MODELS
+const orderSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    orderAmount: { type: Number, required: true, min: 0 },
+    title: { type: String, required: true, trim: true },
+    length: { type: Number, required: true, min: 0 },
+    width: { type: Number, required: true, min: 0 },
+    status: {
+      type: String,
+      default: 'pending',
+      enum: [
+        'pending',
+        'confirmed',
+        'processing',
+        'shipped',
+        'delivered',
+        'cancelled',
+        'accepted',
+        'rejected',
+      ],
+    },
+    feedback: { type: String, trim: true, default: '' },
+  },
+  { timestamps: true }
+);
+
+const enquirySchema = new mongoose.Schema(
+  {
+    name: { type: String, required: true, trim: true },
+    email: { type: String, default: '', trim: true },
+    mobile: { type: String, required: true, trim: true },
+    subject: { type: String, required: true, trim: true },
+    message: { type: String, required: true, trim: true },
+  },
+  { timestamps: true }
+);
+
+// ✅ REGISTER MODELS (mongoose keeps a model cache, so this is idempotent)
 let User, Service, Order, Enquiry;
 
 const registerModels = () => {
@@ -156,35 +185,52 @@ const registerModels = () => {
   Service = mongoose.models.Service || mongoose.model('Service', serviceSchema);
   Order = mongoose.models.Order || mongoose.model('Order', orderSchema);
   Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
-  console.log('✅ Models registered');
 };
 
-// ✅ Connect to MongoDB
+// Register models immediately — safe to do at module load
+registerModels();
+
+// ==================== MONGODB CONNECTION (serverless-safe) ====================
+// Cache the connection promise so we don't reconnect on every request,
+// but ALWAYS await it inside route handlers so serverless functions
+// wait for the DB before responding.
+let connectionPromise = null;
+
 const connectDB = async () => {
-  try {
-    const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
-    
-    if (!uri) {
-      console.error('❌ No MongoDB URI found');
-      return;
-    }
-    
-    await mongoose.connect(uri, {
+  // Already connected
+  if (mongoose.connection.readyState === 1) return;
+
+  // Reuse in-flight connection attempt
+  if (connectionPromise) return connectionPromise;
+
+  const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error('No MongoDB URI configured');
+  }
+
+  connectionPromise = mongoose
+    .connect(uri, {
       serverSelectionTimeoutMS: 10000,
       socketTimeoutMS: 45000,
+      bufferCommands: false,
+    })
+    .then(() => {
+      console.log('✅ MongoDB connected');
+    })
+    .catch((err) => {
+      console.error('❌ MongoDB error:', err.message);
+      connectionPromise = null; // allow retry on next request
+      throw err;
     });
-    
-    isConnected = true;
-    console.log('✅ MongoDB connected');
-    registerModels();
-    
-  } catch (err) {
-    console.error('❌ MongoDB error:', err.message);
-    isConnected = false;
-  }
+
+  return connectionPromise;
 };
 
-connectDB();
+// Fire off connection attempt at module load (non-blocking).
+// If it succeeds before the first request, great. If not, routes will await it.
+connectDB().catch((err) => {
+  console.error('❌ Initial MongoDB connection failed:', err.message);
+});
 
 // ==================== AUTHENTICATION MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
@@ -195,22 +241,40 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Please log in.' });
   }
 
-  jwt.verify(token, process.env.JWT_SECRET || 'fallback_secret_key', (err, user) => {
-    if (err) {
-      return res.status(403).json({ success: false, message: 'Invalid token. Please log in again.' });
+  jwt.verify(
+    token,
+    process.env.JWT_SECRET || 'fallback_secret_key',
+    (err, user) => {
+      if (err) {
+        return res
+          .status(403)
+          .json({ success: false, message: 'Invalid token. Please log in again.' });
+      }
+      req.user = user;
+      next();
     }
-    req.user = user;
-    next();
-  });
+  );
 };
 
 // ==================== ROUTES ====================
 
-app.get('/', (req, res) => {
+app.get('/', async (req, res) => {
+  let dbConnected = false;
+  let dbError = null;
+  try {
+    await connectDB();
+    dbConnected = mongoose.connection.readyState === 1;
+  } catch (err) {
+    dbError = err.message;
+  }
+
   res.json({
     message: 'Omkar Steel Fabricators Backend',
     status: 'OK',
-    database: { connected: isConnected }
+    database: {
+      connected: dbConnected,
+      ...(dbError ? { error: dbError } : {}),
+    },
   });
 });
 
@@ -221,22 +285,26 @@ app.get('/api/test', (req, res) => {
 // ==================== SIGNUP ====================
 app.post('/api/signup', async (req, res) => {
   try {
-    if (!isConnected) {
-      return res.status(503).json({ success: false, message: 'Database not connected.' });
-    }
+    await connectDB();
 
     const { username, email, mobile, password, addr } = req.body;
 
     if (!username || !mobile || !password) {
-      return res.status(400).json({ success: false, message: 'Username, mobile, password required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Username, mobile, password required' });
     }
     if (!/^\d{10}$/.test(mobile)) {
-      return res.status(400).json({ success: false, message: 'Mobile must be 10 digits' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Mobile must be 10 digits' });
     }
 
     const existingMobile = await User.findOne({ mobile });
     if (existingMobile) {
-      return res.status(400).json({ success: false, message: 'Mobile already exists' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Mobile already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -247,7 +315,7 @@ app.post('/api/signup', async (req, res) => {
       password: hashedPassword,
       email: email ? email.trim().toLowerCase() : '',
       addr: addr ? addr.trim() : '',
-      role: userCount === 0 ? 'admin' : 'user'
+      role: userCount === 0 ? 'admin' : 'user',
     });
 
     await newUser.save();
@@ -262,12 +330,13 @@ app.post('/api/signup', async (req, res) => {
       success: true,
       message: 'User registered successfully',
       token,
-      user: { id: newUser._id, username: newUser.username, role: newUser.role }
+      user: { id: newUser._id, username: newUser.username, role: newUser.role },
     });
-
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ success: false, message: 'User already exists' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'User already exists' });
     }
     res.status(500).json({ success: false, message: error.message });
   }
@@ -276,14 +345,14 @@ app.post('/api/signup', async (req, res) => {
 // ==================== LOGIN ====================
 app.post('/api/login', async (req, res) => {
   try {
-    if (!isConnected) {
-      return res.status(503).json({ success: false, message: 'Database not connected.' });
-    }
+    await connectDB();
 
     const { mobile, password } = req.body;
 
     if (!mobile || !password) {
-      return res.status(400).json({ success: false, message: 'Mobile and password required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Mobile and password required' });
     }
 
     const user = await User.findOne({ mobile: mobile.trim() });
@@ -310,9 +379,8 @@ app.post('/api/login', async (req, res) => {
       message: 'Login successful',
       token,
       role: user.role,
-      username: user.username
+      username: user.username,
     });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -321,6 +389,7 @@ app.post('/api/login', async (req, res) => {
 // ==================== PROFILE ====================
 app.get('/api/profile', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const user = await User.findById(req.user.id).select('-password');
     if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
@@ -331,7 +400,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       email: user.email,
       mobile: user.mobile,
       addr: user.addr,
-      role: user.role
+      role: user.role,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -340,6 +409,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
 
 app.put('/api/profile', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const { username, email, mobile, addr, password } = req.body;
     const user = await User.findById(req.user.id);
     if (!user) {
@@ -361,7 +431,7 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
       username: user.username,
       email: user.email,
       mobile: user.mobile,
-      addr: user.addr
+      addr: user.addr,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
@@ -371,14 +441,14 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
 // ==================== ENQUIRY ====================
 app.post('/api/enquiries', async (req, res) => {
   try {
-    if (!isConnected) {
-      return res.status(503).json({ success: false, message: 'Database not connected.' });
-    }
+    await connectDB();
 
     const { name, email, mobile, subject, message } = req.body;
 
     if (!name || !mobile || !subject || !message) {
-      return res.status(400).json({ success: false, message: 'All fields required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'All fields required' });
     }
 
     const newEnquiry = new Enquiry({
@@ -386,12 +456,11 @@ app.post('/api/enquiries', async (req, res) => {
       email: email ? email.trim() : '',
       mobile: mobile.trim(),
       subject: subject.trim(),
-      message: message.trim()
+      message: message.trim(),
     });
 
     await newEnquiry.save();
     res.status(201).json({ success: true, message: 'Enquiry submitted' });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -400,6 +469,7 @@ app.post('/api/enquiries', async (req, res) => {
 // ==================== SERVICES ====================
 app.get('/api/services', async (req, res) => {
   try {
+    await connectDB();
     const services = await Service.find().sort({ createdAt: -1 });
     res.status(200).json({ success: true, services });
   } catch (error) {
@@ -407,65 +477,84 @@ app.get('/api/services', async (req, res) => {
   }
 });
 
-app.post('/api/services', authenticateToken, upload.single('image'), async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin only' });
+app.post(
+  '/api/services',
+  authenticateToken,
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      await connectDB();
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Admin only' });
+      }
+
+      const { title, pricePerSquareFoot } = req.body;
+      if (!title || !pricePerSquareFoot) {
+        return res
+          .status(400)
+          .json({ success: false, message: 'Title and price required' });
+      }
+
+      const imagePath = req.file ? `/uploads/${req.file.filename}` : '';
+      const newService = new Service({
+        title: title.trim(),
+        pricePerSquareFoot: parseFloat(pricePerSquareFoot),
+        imagePath,
+      });
+
+      await newService.save();
+      res
+        .status(201)
+        .json({ success: true, message: 'Service created', service: newService });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-
-    const { title, pricePerSquareFoot } = req.body;
-    if (!title || !pricePerSquareFoot) {
-      return res.status(400).json({ success: false, message: 'Title and price required' });
-    }
-
-    const imagePath = req.file ? `/uploads/${req.file.filename}` : '';
-    const newService = new Service({
-      title: title.trim(),
-      pricePerSquareFoot: parseFloat(pricePerSquareFoot),
-      imagePath
-    });
-
-    await newService.save();
-    res.status(201).json({ success: true, message: 'Service created', service: newService });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
   }
-});
+);
 
-app.put('/api/services/:id', authenticateToken, upload.single('image'), async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Admin only' });
+app.put(
+  '/api/services/:id',
+  authenticateToken,
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      await connectDB();
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Admin only' });
+      }
+
+      const { title, pricePerSquareFoot } = req.body;
+      const service = await Service.findById(req.params.id);
+      if (!service) {
+        return res
+          .status(404)
+          .json({ success: false, message: 'Service not found' });
+      }
+
+      if (title) service.title = title.trim();
+      if (pricePerSquareFoot)
+        service.pricePerSquareFoot = parseFloat(pricePerSquareFoot);
+      if (req.file) service.imagePath = `/uploads/${req.file.filename}`;
+
+      await service.save();
+      res
+        .status(200)
+        .json({ success: true, message: 'Service updated', service });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-
-    const { title, pricePerSquareFoot } = req.body;
-    const service = await Service.findById(req.params.id);
-    if (!service) {
-      return res.status(404).json({ success: false, message: 'Service not found' });
-    }
-
-    if (title) service.title = title.trim();
-    if (pricePerSquareFoot) service.pricePerSquareFoot = parseFloat(pricePerSquareFoot);
-    if (req.file) service.imagePath = `/uploads/${req.file.filename}`;
-
-    await service.save();
-    res.status(200).json({ success: true, message: 'Service updated', service });
-
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
   }
-});
+);
 
 app.delete('/api/services/:id', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
 
     await Service.findByIdAndDelete(req.params.id);
     res.status(200).json({ success: true, message: 'Service deleted' });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -474,10 +563,13 @@ app.delete('/api/services/:id', authenticateToken, async (req, res) => {
 // ==================== ORDERS ====================
 app.post('/api/create-order', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const { title, length, width, orderAmount } = req.body;
 
     if (!title || !length || !width || !orderAmount) {
-      return res.status(400).json({ success: false, message: 'All fields required' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'All fields required' });
     }
 
     const newOrder = new Order({
@@ -486,12 +578,13 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
       title: title.trim(),
       length: parseFloat(length),
       width: parseFloat(width),
-      status: 'pending'
+      status: 'pending',
     });
 
     await newOrder.save();
-    res.status(201).json({ success: true, message: 'Order created', order: newOrder });
-
+    res
+      .status(201)
+      .json({ success: true, message: 'Order created', order: newOrder });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -499,12 +592,12 @@ app.post('/api/create-order', authenticateToken, async (req, res) => {
 
 app.get('/api/my-orders', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const orders = await Order.find({ userId: req.user.id })
       .populate('userId', 'username')
       .sort({ createdAt: -1 });
 
     res.status(200).json({ success: true, orders });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -512,14 +605,17 @@ app.get('/api/my-orders', authenticateToken, async (req, res) => {
 
 app.get('/api/orders', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     let orders;
     if (req.user.role === 'admin') {
       orders = await Order.find().populate('userId', 'username email mobile');
     } else {
-      orders = await Order.find({ userId: req.user.id }).populate('userId', 'username');
+      orders = await Order.find({ userId: req.user.id }).populate(
+        'userId',
+        'username'
+      );
     }
     res.status(200).json({ success: true, orders });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -527,13 +623,16 @@ app.get('/api/orders', authenticateToken, async (req, res) => {
 
 app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const order = await Order.findById(req.params.orderId);
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
     if (order.status !== 'pending') {
-      return res.status(400).json({ success: false, message: 'Cannot cancel this order' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Cannot cancel this order' });
     }
 
     if (req.user.role !== 'admin' && order.userId.toString() !== req.user.id) {
@@ -543,7 +642,6 @@ app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
     order.status = 'cancelled';
     await order.save();
     res.status(200).json({ success: true, message: 'Order cancelled', order });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -551,6 +649,7 @@ app.put('/api/orders/:orderId/cancel', authenticateToken, async (req, res) => {
 
 app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     const { action, feedback } = req.body;
     const order = await Order.findById(req.params.orderId);
     if (!order) {
@@ -558,7 +657,9 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
     }
 
     if (order.status !== 'delivered') {
-      return res.status(400).json({ success: false, message: 'Cannot review this order' });
+      return res
+        .status(400)
+        .json({ success: false, message: 'Cannot review this order' });
     }
 
     if (action === 'accept') {
@@ -571,8 +672,9 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
 
     if (feedback) order.feedback = feedback;
     await order.save();
-    res.status(200).json({ success: true, message: `Order ${action}ed`, order });
-
+    res
+      .status(200)
+      .json({ success: true, message: `Order ${action}ed`, order });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -580,6 +682,7 @@ app.put('/api/orders/:orderId/review', authenticateToken, async (req, res) => {
 
 app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
   try {
+    await connectDB();
     if (req.user.role !== 'admin') {
       return res.status(403).json({ success: false, message: 'Admin only' });
     }
@@ -596,17 +699,20 @@ app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
       }
     }
 
-    res.status(200).json({ success: true, message: 'Statuses updated', updatedOrders });
-
+    res
+      .status(200)
+      .json({ success: true, message: 'Statuses updated', updatedOrders });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 });
 
 // ==================== STATIC FILES ====================
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/uploads', express.static(uploadDir));
 
 // ==================== START SERVER ====================
+// Locally: actually listen on PORT.
+// On Vercel: the exported `app` is invoked as a serverless function — no listen.
 const PORT = process.env.PORT || 5000;
 
 if (process.env.NODE_ENV !== 'production') {
