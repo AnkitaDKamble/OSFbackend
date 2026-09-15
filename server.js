@@ -20,40 +20,71 @@ const app = express();
 
 // ==================== VERIFY ENV VARIABLES ====================
 const MONGO_URI = process.env.MONGO_URI || process.env.MONGODB_URI;
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback_secret_key';
+const NODE_ENV = process.env.NODE_ENV || 'development';
+const IS_PRODUCTION = NODE_ENV === 'production';
 
 console.log('🚀 Environment Variables Check:');
 console.log('✅ MONGO_URI:', MONGO_URI ? 'Set ✅' : 'Not Set ❌');
-console.log('✅ JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✅' : 'Not Set ❌');
+console.log('✅ JWT_SECRET:', process.env.JWT_SECRET ? 'Set ✅' : 'Not Set ❌ (using fallback)');
 console.log('✅ PORT:', process.env.PORT || 5000);
-console.log('✅ NODE_ENV:', process.env.NODE_ENV || 'development');
+console.log('✅ NODE_ENV:', NODE_ENV);
+console.log('✅ FRONTEND_URL:', process.env.FRONTEND_URL || 'Not Set ❌');
 
 if (MONGO_URI) {
   const maskedURI = MONGO_URI.substring(0, 25) + '...';
   console.log('📝 MONGO_URI starts with:', maskedURI);
 }
 
+// ✅ FIXED: Warn loudly if production env vars are missing
+if (IS_PRODUCTION) {
+  if (!process.env.JWT_SECRET) {
+    console.error('⚠️  JWT_SECRET is not set in production! Using insecure fallback.');
+  }
+  if (!process.env.FRONTEND_URL) {
+    console.warn('⚠️  FRONTEND_URL is not set in production! CORS may be too permissive.');
+  }
+}
+
 // ==================== CORS ====================
+// ✅ FIXED: Proper origin allowlist, no wildcard vercel.app matches
 const allowedOrigins = [
   'http://localhost:5000',
   'http://127.0.0.1:5000',
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  process.env.FRONTEND_URL || 'https://omkar-steel-fabricators-frontend.vercel.app',
 ];
+
+// Add FRONTEND_URL (can be comma-separated for multiple origins)
+if (process.env.FRONTEND_URL) {
+  process.env.FRONTEND_URL.split(',')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .forEach((url) => allowedOrigins.push(url));
+}
+
+console.log('🌐 Allowed CORS origins:', allowedOrigins);
 
 app.use(
   cors({
     origin: function (origin, callback) {
+      // Allow requests with no origin (mobile apps, curl, Postman, server-to-server)
       if (!origin) return callback(null, true);
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // ✅ FIXED: Explicitly allow localhost/127.0.0.1 in dev only
       if (
-        allowedOrigins.includes(origin) ||
-        origin.includes('vercel.app') ||
-        origin.includes('localhost') ||
-        origin.includes('127.0.0.1')
+        !IS_PRODUCTION &&
+        (origin.includes('localhost') || origin.includes('127.0.0.1'))
       ) {
         return callback(null, true);
       }
-      return callback(new Error('Not allowed by CORS'));
+
+      console.warn(`⛔ CORS blocked origin: ${origin}`);
+      return callback(new Error(`Not allowed by CORS: ${origin}`));
     },
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -61,7 +92,9 @@ app.use(
   })
 );
 
-app.options('*', cors());
+// ✅ FIXED: Express 5 uses path-to-regexp v6+ which no longer supports '*'.
+// Use a middleware instead of app.options('*', ...)
+app.options(/.*/, cors());
 
 // ==================== MIDDLEWARE ====================
 app.use(express.json());
@@ -69,18 +102,18 @@ app.use(express.urlencoded({ extended: true }));
 
 // ==================== FILE UPLOAD CONFIGURATION ====================
 // On Vercel, only /tmp is writable. On local, use ./uploads.
-const isProduction = process.env.NODE_ENV === 'production';
-const uploadDir = isProduction
+const uploadDir = IS_PRODUCTION
   ? '/tmp/uploads'
   : path.join(__dirname, 'uploads');
 
-if (!fs.existsSync(uploadDir)) {
-  try {
+// ✅ FIXED: Wrap fs checks in try/catch — /tmp is fine but be defensive
+try {
+  if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
     console.log('📁 Uploads folder created:', uploadDir);
-  } catch (e) {
-    console.warn('⚠️ Could not create uploads dir:', e.message);
   }
+} catch (e) {
+  console.warn('⚠️ Could not create uploads dir:', e.message);
 }
 
 const storage = multer.diskStorage({
@@ -100,9 +133,8 @@ const fileFilter = (req, file, cb) => {
 
   if (mimetype && extname) {
     return cb(null, true);
-  } else {
-    cb(new Error('Only image files are allowed'), false);
   }
+  cb(new Error('Only image files are allowed'), false);
 };
 
 const upload = multer({
@@ -177,7 +209,7 @@ const enquirySchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// ✅ REGISTER MODELS (mongoose keeps a model cache, so this is idempotent)
+// ✅ REGISTER MODELS
 let User, Service, Order, Enquiry;
 
 const registerModels = () => {
@@ -187,20 +219,14 @@ const registerModels = () => {
   Enquiry = mongoose.models.Enquiry || mongoose.model('Enquiry', enquirySchema);
 };
 
-// Register models immediately — safe to do at module load
 registerModels();
 
 // ==================== MONGODB CONNECTION (serverless-safe) ====================
-// Cache the connection promise so we don't reconnect on every request,
-// but ALWAYS await it inside route handlers so serverless functions
-// wait for the DB before responding.
 let connectionPromise = null;
 
 const connectDB = async () => {
-  // Already connected
   if (mongoose.connection.readyState === 1) return;
 
-  // Reuse in-flight connection attempt
   if (connectionPromise) return connectionPromise;
 
   const uri = process.env.MONGO_URI || process.env.MONGODB_URI;
@@ -219,15 +245,13 @@ const connectDB = async () => {
     })
     .catch((err) => {
       console.error('❌ MongoDB error:', err.message);
-      connectionPromise = null; // allow retry on next request
+      connectionPromise = null;
       throw err;
     });
 
   return connectionPromise;
 };
 
-// Fire off connection attempt at module load (non-blocking).
-// If it succeeds before the first request, great. If not, routes will await it.
 connectDB().catch((err) => {
   console.error('❌ Initial MongoDB connection failed:', err.message);
 });
@@ -241,19 +265,15 @@ const authenticateToken = (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Please log in.' });
   }
 
-  jwt.verify(
-    token,
-    process.env.JWT_SECRET || 'fallback_secret_key',
-    (err, user) => {
-      if (err) {
-        return res
-          .status(403)
-          .json({ success: false, message: 'Invalid token. Please log in again.' });
-      }
-      req.user = user;
-      next();
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res
+        .status(403)
+        .json({ success: false, message: 'Invalid token. Please log in again.' });
     }
-  );
+    req.user = user;
+    next();
+  });
 };
 
 // ==================== ROUTES ====================
@@ -271,6 +291,7 @@ app.get('/', async (req, res) => {
   res.json({
     message: 'Omkar Steel Fabricators Backend',
     status: 'OK',
+    environment: NODE_ENV,
     database: {
       connected: dbConnected,
       ...(dbError ? { error: dbError } : {}),
@@ -322,7 +343,7 @@ app.post('/api/signup', async (req, res) => {
 
     const token = jwt.sign(
       { id: newUser._id, username: newUser.username, role: newUser.role },
-      process.env.JWT_SECRET || 'fallback_secret_key',
+      JWT_SECRET,
       { expiresIn: '7d' }
     );
 
@@ -370,7 +391,7 @@ app.post('/api/login', async (req, res) => {
 
     const token = jwt.sign(
       { id: user._id, username: user.username, role: user.role },
-      process.env.JWT_SECRET || 'fallback_secret_key',
+      JWT_SECRET,
       { expiresIn: '7d' }
     );
 
@@ -710,15 +731,40 @@ app.post('/api/orders/update-status', authenticateToken, async (req, res) => {
 // ==================== STATIC FILES ====================
 app.use('/uploads', express.static(uploadDir));
 
+// ==================== 404 HANDLER ====================
+app.use((req, res) => {
+  res.status(404).json({ success: false, message: `Not found: ${req.method} ${req.url}` });
+});
+
+// ==================== GLOBAL ERROR HANDLER ====================
+// ✅ FIXED: Ensures CORS/multer errors return proper JSON instead of HTML
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled error:', err.message);
+
+  if (err.message && err.message.startsWith('Not allowed by CORS')) {
+    return res.status(403).json({ success: false, message: err.message });
+  }
+
+  if (err.message === 'Only image files are allowed') {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+
+  res.status(500).json({ success: false, message: err.message || 'Server error' });
+});
+
 // ==================== START SERVER ====================
-// Locally: actually listen on PORT.
-// On Vercel: the exported `app` is invoked as a serverless function — no listen.
 const PORT = process.env.PORT || 5000;
 
-if (process.env.NODE_ENV !== 'production') {
+// ✅ FIXED: Only listen when running locally (not on Vercel)
+// Vercel sets VERCEL=1 automatically in serverless functions.
+const isServerless = !!process.env.VERCEL || IS_PRODUCTION;
+
+if (!isServerless) {
   app.listen(PORT, () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
   });
+} else {
+  console.log('☁️  Running in serverless mode — not calling app.listen()');
 }
 
 export default app;
